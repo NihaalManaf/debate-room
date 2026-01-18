@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Debate Room</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Idea Input Section -->
+  <section class="idea-section" id="ideaSection">
+    <div class="idea-card">
+      <div class="idea-card-header">
+        <span class="emblem">⚖️</span>
+        <h1>Startup Debate Room</h1>
+        <p>Pitch a startup idea. Watch VCs argue if it'll fly or die.</p>
+      </div>
+      <div class="input-wrapper">
+        <textarea 
+          id="ideaInput" 
+          placeholder="An AI-powered platform that matches freelance chefs with home dinner parties..."
+          rows="3"
+        ></textarea>
+        <div class="api-key-row">
+          <input 
+            type="password" 
+            id="apiKeyInput" 
+            placeholder="OpenAI API Key (sk-...)"
+            autocomplete="off"
+          />
+          <button type="button" id="toggleApiKey" class="btn-toggle-key" title="Show/hide key">👁</button>
+        </div>
+        <p class="api-key-hint">Your key is stored locally and never sent to our servers. <a href="https://platform.openai.com/api-keys" target="_blank">Get a key →</a></p>
+        <button id="startDebate" class="btn-start">
+          Begin Debate →
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Main Debate Layout -->
+  <div class="debate-layout hidden" id="debateLayout">
+    <!-- Left: Chat Area -->
+    <main class="debate-main">
+      <header class="debate-topbar">
+        <div class="topbar-left">
+          <span class="emblem-small">⚖️</span>
+          <div class="topic-info">
+            <span class="topic-label">Topic</span>
+            <span class="topic-text" id="currentIdea"></span>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="round-display">
+            Round <span id="roundNumber">1</span>
+          </div>
+          <button id="pauseDebate" class="btn-control" title="Pause">
+            ⏸
+          </button>
+          <button id="judgeDebate" class="btn-judge" title="Call the Judge">
+            ⚖️ Judge
+          </button>
+          <button id="newDebate" class="btn-control-text">
+            New Topic
+          </button>
+        </div>
+      </header>
+
+      <div class="debaters-bar">
+        <div class="debater-tag advocate-tag">
+          <span class="tag-icon">✓</span>
+          <span class="tag-name">Advocate</span>
+        </div>
+        <span class="versus">vs</span>
+        <div class="debater-tag skeptic-tag">
+          <span class="tag-icon">✗</span>
+          <span class="tag-name">Skeptic</span>
+        </div>
+      </div>
+
+      <div class="chat-scroll" id="debateChat">
+        <!-- Messages injected here -->
+      </div>
+
+      <!-- Judge Verdict Panel -->
+      <div class="verdict-panel hidden" id="verdictPanel">
+        <div class="verdict-header">
+          <span class="verdict-icon">⚖️</span>
+          <span class="verdict-title">The Judge's Verdict</span>
+          <button id="closeVerdict" class="btn-close">×</button>
+        </div>
+        <div class="verdict-content" id="verdictContent">
+          <!-- Verdict will be injected here -->
+        </div>
+      </div>
+    </main>
+
+    <!-- Right: Thinking Sidebar -->
+    <aside class="thinking-sidebar" id="thinkingSidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-icon">💭</span>
+        <span class="sidebar-title">Live Reasoning</span>
+      </div>
+      <div class="sidebar-content">
+        <div class="thinking-empty" id="thinkingEmpty">
+          <p>Internal reasoning will appear here as each debater formulates their argument.</p>
+        </div>
+        <div class="thinking-active hidden" id="thinkingActive">
+          <div class="thinking-who" id="thinkingWho">Advocate</div>
+          <div class="thinking-text" id="thinkingContent"></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
