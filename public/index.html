@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <!-- Idea Input Section -->
@@ -26,6 +27,19 @@
             placeholder="An AI-powered platform that matches freelance chefs with home dinner parties..."
             rows="3"
           ></textarea>
+          
+          <!-- File Upload Area -->
+          <div class="file-upload-area" id="fileUploadArea">
+            <input type="file" id="fileInput" accept="image/*,.pdf,.txt,.rtf" multiple hidden />
+            <div class="upload-dropzone" id="uploadDropzone">
+              <span class="upload-icon">📎</span>
+              <span class="upload-text">Add supporting docs</span>
+              <span class="upload-hint">Images, PDFs, or text files</span>
+            </div>
+            <div class="file-previews" id="filePreviews"></div>
+            <p class="file-limit-hint" id="fileLimitHint"></p>
+          </div>
+
           <div class="api-key-row">
             <input 
               type="password" 
@@ -48,11 +62,11 @@
       </div>
 
       <!-- Right: Sign In Card -->
-      <div class="auth-card">
+      <div class="auth-card" id="authCard">
         <div class="auth-card-header">
           <span class="emblem">✦</span>
           <h2>Sign In</h2>
-          <p>Unlock premium features & save your debates</p>
+          <p>Save debates & unlock premium features</p>
         </div>
         <div class="auth-form">
           <div class="auth-input-group">
@@ -73,24 +87,12 @@
               autocomplete="current-password"
             />
           </div>
-          <button id="signInBtn" class="btn-auth btn-signin">
+          <button id="signInBtn" class="btn-primary">
             Sign In
           </button>
-          <div class="auth-divider">
-            <span>or continue with</span>
-          </div>
-          <button id="googleSignInBtn" class="btn-auth btn-google">
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/>
-              <path d="M9.003 18c2.43 0 4.467-.806 5.956-2.18l-2.909-2.26c-.806.54-1.836.86-3.047.86-2.344 0-4.328-1.584-5.036-3.711H.96v2.332A8.997 8.997 0 0 0 9.003 18z" fill="#34A853"/>
-              <path d="M3.964 10.712A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.33z" fill="#FBBC05"/>
-              <path d="M9.003 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.464.891 11.428 0 9.002 0A8.997 8.997 0 0 0 .96 4.958l3.005 2.332c.708-2.127 2.692-3.71 5.036-3.71z" fill="#EA4335"/>
-            </svg>
-            Google
-          </button>
-        </div>
-        <div class="auth-footer">
-          <p>Don't have an account? <a href="#" id="showSignUp">Sign up →</a></p>
+          <p class="auth-switch">
+            Don't have an account? <a href="#" id="showSignUp">Create one</a>
+          </p>
         </div>
       </div>
     </div>
@@ -169,6 +171,36 @@
         </div>
       </div>
     </aside>
+  </div>
+
+  <!-- Clarifying Question Modal -->
+  <div class="clarification-modal hidden" id="clarificationModal">
+    <div class="clarification-overlay"></div>
+    <div class="clarification-content">
+      <div class="clarification-header">
+        <span class="clarification-icon">❓</span>
+        <h3>Quick Clarification</h3>
+        <p class="clarification-subtitle">Help us get the facts right</p>
+      </div>
+      <div class="clarification-body">
+        <p class="clarification-claim" id="clarificationClaim"></p>
+        <label class="clarification-label" id="clarificationQuestion"></label>
+        <textarea 
+          id="clarificationAnswer" 
+          class="clarification-input"
+          placeholder="Type your answer..."
+          rows="3"
+        ></textarea>
+      </div>
+      <div class="clarification-footer">
+        <button id="skipClarification" class="btn-secondary btn-skip">
+          Skip (use assumption)
+        </button>
+        <button id="submitClarification" class="btn-primary">
+          Continue →
+        </button>
+      </div>
+    </div>
   </div>
 
   <script src="script.js"></script>

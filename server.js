@@ -11,9 +11,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.static(join(__dirname, 'public')));
+
+// Supabase config endpoint (exposes public keys to frontend)
+app.get('/api/config', (req, res) => {
+  res.json({
+    supabaseUrl: process.env.SUPABASE_URL || '',
+    supabaseAnonKey: process.env.SUPABASE_ANON_KEY || ''
+  });
+});
 
 // Create OpenAI client with the provided API key
 function getOpenAI(apiKey) {
@@ -130,11 +138,32 @@ Format:
 const debates = new Map();
 
 app.post('/api/start-debate', async (req, res) => {
-  const { idea } = req.body;
+  const { idea, files } = req.body;
   const debateId = Date.now().toString();
+
+  // Process files to create context
+  let fileContext = '';
+  if (files && files.length > 0) {
+    const fileDescriptions = files.map(f => {
+      if (f.type === 'image') {
+        return `[Attached image: ${f.name}]\nDescription: ${f.content}`;
+      } else if (f.type === 'pdf') {
+        return `[Attached PDF: ${f.name}]\nContent: ${f.content}`;
+      } else if (f.type === 'text') {
+        return `[Attached text file: ${f.name}]\nContent: ${f.content}`;
+      }
+      return '';
+    }).filter(Boolean);
+
+    if (fileDescriptions.length > 0) {
+      fileContext = '\n\n--- Supporting Materials ---\n' + fileDescriptions.join('\n\n');
+    }
+  }
 
   debates.set(debateId, {
     idea,
+    files: files || [],
+    fileContext,
     history: [],
     round: 0
   });
@@ -142,8 +171,208 @@ app.post('/api/start-debate', async (req, res) => {
   res.json({ debateId, idea });
 });
 
+// Pre-debate clarification - asks questions BEFORE making any assumptions
+app.post('/api/analyze-idea', async (req, res) => {
+  const { idea, files } = req.body;
+
+  const apiKey = req.headers['x-api-key'];
+  const client = getOpenAI(apiKey);
+
+  if (!client) {
+    return res.status(400).json({ error: 'OpenAI API key required' });
+  }
+
+  // Build file context if any
+  let fileContext = '';
+  if (files && files.length > 0) {
+    const fileDescriptions = files.map(f => {
+      if (f.type === 'image') {
+        return `[Attached image: ${f.name}]\nDescription: ${f.content}`;
+      } else if (f.type === 'pdf') {
+        return `[Attached PDF: ${f.name}]\nContent: ${f.content}`;
+      } else if (f.type === 'text') {
+        return `[Attached text file: ${f.name}]\nContent: ${f.content}`;
+      }
+      return '';
+    }).filter(Boolean);
+
+    if (fileDescriptions.length > 0) {
+      fileContext = '\n\n--- Supporting Materials ---\n' + fileDescriptions.join('\n\n');
+    }
+  }
+
+  try {
+    console.log('🔍 Analyzing idea for clarification:', idea);
+
+    const analyzePrompt = `Analyze if this startup idea is understandable enough to debate.
+
+IDEA: "${idea}"${fileContext}
+
+RULE: Return empty questions array UNLESS the idea is just a single ambiguous word/name with NO description.
+
+Examples - return {"questions": []}:
+- "AI tutoring platform" ✓ clear
+- "Food delivery app" ✓ clear
+- "AI platform that teaches students" ✓ clear
+- "SaaS for project management" ✓ clear
+- "Subscription box for pets" ✓ clear
+- "Platform connecting freelancers with clients" ✓ clear
+
+Examples - ask ONE question:
+- "rubberduck" → ask what it is
+- "moonshot" → ask what it is
+- "xyz" → ask what it is
+
+If ANY descriptive words exist (platform, app, service, tool, AI, teaching, etc.), the idea is clear enough.
+
+Respond JSON only:
+{"questions": []} or {"questions": [{"claim": "unknown product", "question": "What is [name]?"}]}`;
+
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'You are a helpful assistant that identifies what needs clarification about a startup idea. Always respond with valid JSON only. Be thoughtful - only ask for genuinely missing critical information.' },
+        { role: 'user', content: analyzePrompt }
+      ],
+      response_format: { type: 'json_object' },
+      max_tokens: 500
+    });
+
+    const result = JSON.parse(response.choices[0]?.message?.content || '{"questions": []}');
+    console.log('🔍 Pre-debate analysis result:', result);
+    res.json(result);
+  } catch (error) {
+    console.error('Pre-debate analysis error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Analyze image using GPT-4 Vision
+app.post('/api/analyze-image', async (req, res) => {
+  const { imageData, context } = req.body;
+
+  const apiKey = req.headers['x-api-key'];
+  const client = getOpenAI(apiKey);
+
+  if (!client) {
+    return res.status(400).json({ error: 'OpenAI API key required' });
+  }
+
+  try {
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: `Analyze this image in the context of a startup idea. Describe what you see that's relevant for evaluating the business concept. Be specific about any charts, mockups, diagrams, or data shown. Keep it concise (2-3 sentences).${context ? `\n\nContext: ${context}` : ''}`
+            },
+            {
+              type: 'image_url',
+              image_url: {
+                url: imageData,
+                detail: 'low'
+              }
+            }
+          ]
+        }
+      ],
+      max_tokens: 300
+    });
+
+    const description = response.choices[0]?.message?.content || 'Could not analyze image';
+    res.json({ description });
+  } catch (error) {
+    console.error('Image analysis error:', error);
+    res.status(500).json({ error: error.message || 'Failed to analyze image' });
+  }
+});
+
+// Fact-checking endpoint - checks if response contains unsupported claims
+app.post('/api/check-facts', async (req, res) => {
+  const { debateId, draftResponse, idea, fileContext: clientFileContext } = req.body;
+
+  console.log('🔍 Fact-check request for debate:', debateId);
+
+  // Try to get debate from map, or use provided context
+  let debate = debates.get(debateId);
+  if (!debate && idea) {
+    // Create a temporary context if debate not in map but idea provided
+    debate = { idea, fileContext: clientFileContext || '' };
+  }
+
+  if (!debate) {
+    console.log('❌ Debate not found:', debateId);
+    return res.status(404).json({ error: 'Debate not found' });
+  }
+
+  const apiKey = req.headers['x-api-key'];
+  const client = getOpenAI(apiKey);
+  if (!client) {
+    return res.status(400).json({ error: 'OpenAI API key required' });
+  }
+
+  try {
+    const fileContext = debate.fileContext || '';
+    const availableContext = `Startup idea: "${debate.idea}"${fileContext}`;
+
+    console.log('📋 Fact-checking draft response...');
+
+    const factCheckPrompt = `You are helping a founder clarify their startup idea.
+
+STARTUP IDEA PROVIDED:
+${availableContext}
+
+DRAFT ARGUMENT:
+${draftResponse}
+
+YOUR TASK:
+Check if the argument makes assumptions about THE FOUNDER'S OWN STARTUP that aren't in their description.
+
+ONLY FLAG assumptions about the startup itself:
+✓ Business model or pricing (e.g., "the subscription costs $X/month")
+✓ Target customers (e.g., "targeting enterprise clients")  
+✓ How the product works (e.g., "using machine learning to...")
+✓ Team or company details (e.g., "the team has 10 years experience")
+✓ Specific features or capabilities claimed
+
+DO NOT FLAG - these are fine to assume:
+✗ Market size or industry projections
+✗ General statistics or research
+✗ Competitor information
+✗ Industry trends
+✗ Economic data
+
+Respond with JSON:
+{
+  "needsClarification": true or false,
+  "claim": "the specific startup assumption (if any)",
+  "question": "a simple question to the founder about THEIR startup (if needsClarification is true)"
+}`;
+
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'You are a helpful fact-checker. Always respond with valid JSON only. Be proactive about identifying assumptions that should be verified.' },
+        { role: 'user', content: factCheckPrompt }
+      ],
+      response_format: { type: 'json_object' },
+      max_tokens: 300
+    });
+
+    const result = JSON.parse(response.choices[0]?.message?.content || '{}');
+    console.log('📋 Fact-check result:', result);
+    res.json(result);
+  } catch (error) {
+    console.error('Fact-check error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/debate-turn', async (req, res) => {
-  const { debateId, role, previousArgument } = req.body;
+  const { debateId, role, previousArgument, clarifications } = req.body;
 
   console.log(`\n📝 [${role.toUpperCase()}] Turn requested for debate ${debateId}`);
 
@@ -162,13 +391,31 @@ app.post('/api/debate-turn', async (req, res) => {
     .map((h, i) => `- ${(h.output || h.content).substring(0, 300)}...`)
     .join('\n');
 
+  // Include file context if available
+  const fileContext = debate.fileContext || '';
+
+  // Include any clarifications provided by the user
+  let clarificationText = '';
+  if (clarifications && clarifications.length > 0) {
+    clarificationText = '\n\n--- User Clarifications ---\n' +
+      clarifications.map(c => `Q: ${c.question}\nA: ${c.answer}`).join('\n\n');
+    // Store clarifications in debate for future turns
+    debate.clarifications = [...(debate.clarifications || []), ...clarifications];
+  }
+
+  // Include previous clarifications
+  if (debate.clarifications && debate.clarifications.length > 0) {
+    clarificationText = '\n\n--- User Clarifications ---\n' +
+      debate.clarifications.map(c => `Q: ${c.question}\nA: ${c.answer}`).join('\n\n');
+  }
+
   let userMessage;
   if (debate.history.length === 0) {
-    userMessage = `Startup idea: "${debate.idea}"
+    userMessage = `Startup idea: "${debate.idea}"${fileContext}${clarificationText}
 
 Make your opening argument.`;
   } else {
-    userMessage = `Startup idea: "${debate.idea}"
+    userMessage = `Startup idea: "${debate.idea}"${fileContext}${clarificationText}
 
 Your recent points (don't repeat):
 ${myPreviousArgs || 'None yet'}
@@ -257,11 +504,14 @@ Counter their point. Add ONE new argument.`;
 
 // Judge endpoint - evaluates the debate and declares a winner
 app.post('/api/judge', async (req, res) => {
-  const { debateId, advocateArguments, skepticArguments } = req.body;
+  const { debateId, advocateArguments, skepticArguments, idea } = req.body;
 
+  // Get idea from debate or directly from request (for loaded past debates)
   const debate = debates.get(debateId);
-  if (!debate) {
-    return res.status(404).json({ error: 'Debate not found' });
+  const debateIdea = debate?.idea || idea;
+
+  if (!debateIdea) {
+    return res.status(400).json({ error: 'Debate idea is required' });
   }
 
   // Limit to last 10 rounds to avoid context overflow
@@ -270,7 +520,7 @@ app.post('/api/judge', async (req, res) => {
   const recentSkeptic = skepticArguments.slice(-maxRounds);
   const totalRounds = Math.max(advocateArguments.length, skepticArguments.length);
 
-  const userMessage = `The startup idea: "${debate.idea}"
+  const userMessage = `The startup idea: "${debateIdea}"
 
 Total rounds debated: ${totalRounds}
 (Showing last ${Math.min(maxRounds, totalRounds)} rounds for evaluation)
