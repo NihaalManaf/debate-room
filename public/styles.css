@@ -610,6 +610,49 @@ body {
   background: var(--border);
 }
 
+/* Model Selector */
+.model-selector-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--bg-warm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+}
+
+.model-selector-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.model-selector {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  color: var(--text-body);
+  cursor: pointer;
+  appearance: none; /* Remove default arrow to style consistently if needed, but keeping simple for now */
+}
+
+.model-selector:disabled {
+  color: var(--text-light);
+  cursor: not-allowed;
+}
+
+.model-selector:focus {
+  outline: none;
+}
+
+.premium-lock {
+  font-size: 1rem;
+  cursor: help;
+  opacity: 0.7;
+}
+
 /* ==========================================
    FILE UPLOAD AREA
    ========================================== */

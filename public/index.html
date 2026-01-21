@@ -1,15 +1,24 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>The Debate Room</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=DM+Sans:wght@400;500;600&display=swap"
+    rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>
+    // Initialize PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  </script>
 </head>
+
 <body>
   <!-- Idea Input Section -->
   <section class="idea-section" id="ideaSection">
@@ -22,12 +31,10 @@
           <p>Pitch a startup idea. Watch VCs argue if it'll fly or die.</p>
         </div>
         <div class="input-wrapper">
-          <textarea 
-            id="ideaInput" 
+          <textarea id="ideaInput"
             placeholder="An AI-powered platform that matches freelance chefs with home dinner parties..."
-            rows="3"
-          ></textarea>
-          
+            rows="3"></textarea>
+
           <!-- File Upload Area -->
           <div class="file-upload-area" id="fileUploadArea">
             <input type="file" id="fileInput" accept="image/*,.pdf,.txt,.rtf" multiple hidden />
@@ -41,15 +48,22 @@
           </div>
 
           <div class="api-key-row">
-            <input 
-              type="password" 
-              id="apiKeyInput" 
-              placeholder="OpenAI API Key (sk-...)"
-              autocomplete="off"
-            />
+            <input type="password" id="apiKeyInput" placeholder="OpenAI API Key (sk-...)" autocomplete="off" />
             <button type="button" id="toggleApiKey" class="btn-toggle-key" title="Show/hide key">👁</button>
           </div>
-          <p class="api-key-hint">Your key is stored locally and never sent to our servers. <a href="https://platform.openai.com/api-keys" target="_blank">Get a key →</a></p>
+          <p class="api-key-hint">Your key is stored locally and never sent to our servers. <a
+              href="https://platform.openai.com/api-keys" target="_blank">Get a key →</a></p>
+          <div class="model-selector-row">
+            <label for="modelSelector" class="model-selector-label">Model:</label>
+            <select id="modelSelector" class="model-selector" disabled>
+              <option value="openai/gpt-4o-mini">GPT-4o Mini (Standard)</option>
+              <option value="openai/gpt-4o">GPT-4o (Premium)</option>
+              <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet (Premium)</option>
+              <option value="google/gemini-flash-1.5">Gemini 1.5 Flash (Premium)</option>
+              <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B (Premium)</option>
+            </select>
+            <span class="premium-lock" id="modelLock" title="Upgrade to Premium to unlock">🔒</span>
+          </div>
           <button id="startDebate" class="btn-start">
             Begin Debate →
           </button>
@@ -71,21 +85,11 @@
         <div class="auth-form">
           <div class="auth-input-group">
             <label for="authEmail">Email</label>
-            <input 
-              type="email" 
-              id="authEmail" 
-              placeholder="you@example.com"
-              autocomplete="email"
-            />
+            <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email" />
           </div>
           <div class="auth-input-group">
             <label for="authPassword">Password</label>
-            <input 
-              type="password" 
-              id="authPassword" 
-              placeholder="••••••••"
-              autocomplete="current-password"
-            />
+            <input type="password" id="authPassword" placeholder="••••••••" autocomplete="current-password" />
           </div>
           <button id="signInBtn" class="btn-primary">
             Sign In
@@ -185,12 +189,8 @@
       <div class="clarification-body">
         <p class="clarification-claim" id="clarificationClaim"></p>
         <label class="clarification-label" id="clarificationQuestion"></label>
-        <textarea 
-          id="clarificationAnswer" 
-          class="clarification-input"
-          placeholder="Type your answer..."
-          rows="3"
-        ></textarea>
+        <textarea id="clarificationAnswer" class="clarification-input" placeholder="Type your answer..."
+          rows="3"></textarea>
       </div>
       <div class="clarification-footer">
         <button id="skipClarification" class="btn-secondary btn-skip">
@@ -205,4 +205,5 @@
 
   <script src="script.js"></script>
 </body>
+
 </html>

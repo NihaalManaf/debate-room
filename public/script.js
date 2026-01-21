@@ -5,7 +5,7 @@
 // ============================================
 const MAX_FREE_ROUNDS = 3; // Set to 10 for production
 const MAX_FREE_FILES = 1;  // Free users can only upload 1 file
-const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_MB = 5;
 const ALLOWED_FILE_TYPES = [
   'image/jpeg', 'image/png', 'image/webp', 'image/gif', // Images
   'application/pdf',                                      // PDFs
@@ -392,7 +392,22 @@ class AuthManager {
     }
 
     this.updateUI();
+    this.updateUI();
     this.setupEventListeners();
+    this.checkForPaymentStatus();
+  }
+
+  checkForPaymentStatus() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('success') === 'true') {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      this.showToast('🎉 Upgrade successful! Welcome to Premium!', 'success');
+      // Force profile refresh
+      if (this.user) this.fetchProfile();
+    } else if (params.get('canceled') === 'true') {
+      window.history.replaceState({}, document.title, window.location.pathname);
+      this.showToast('Upgrade canceled.', 'info');
+    }
   }
 
   async fetchProfile() {
@@ -619,6 +634,21 @@ class AuthManager {
     const isConfigured = !!this.supabase;
     const isPremium = this.isPremium();
 
+    // Update model selector state
+    const modelSelector = document.getElementById('modelSelector');
+    const modelLock = document.getElementById('modelLock');
+
+    if (modelSelector && modelLock) {
+      if (isPremium) {
+        modelSelector.disabled = false;
+        modelLock.classList.add('hidden');
+      } else {
+        modelSelector.disabled = true;
+        modelSelector.value = 'openai/gpt-4o-mini'; // Reset to default
+        modelLock.classList.remove('hidden');
+      }
+    }
+
     if (this.user) {
       // User is logged in - show welcome state
       const email = this.user.email;
@@ -665,7 +695,7 @@ class AuthManager {
       const upgradeBtn = document.getElementById('upgradeBtn');
       if (upgradeBtn) {
         upgradeBtn.addEventListener('click', () => {
-          this.showToast('Premium upgrade coming soon!', 'info');
+          this.handleUpgrade();
         });
       }
     } else if (this.isSignUp) {
@@ -744,6 +774,49 @@ class AuthManager {
           ${!isConfigured ? '<p class="auth-hint">Configure Supabase to enable auth</p>' : ''}
         </div>
       `;
+    }
+  }
+
+  async handleUpgrade() {
+    if (!this.user) {
+      this.showToast('Please sign in to upgrade', 'error');
+      return;
+    }
+
+    const upgradeBtn = document.getElementById('upgradeBtn');
+    if (upgradeBtn) {
+      upgradeBtn.textContent = 'Redirecting to Stripe...';
+      upgradeBtn.disabled = true;
+    }
+
+    try {
+      const response = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          userId: this.user.id,
+          email: this.user.email
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      if (data.url) {
+        window.location.href = data.url;
+      }
+    } catch (error) {
+      console.error('Upgrade error:', error);
+      this.showToast('Failed to start checkout', 'error');
+      if (upgradeBtn) {
+        upgradeBtn.textContent = 'Upgrade to Premium';
+        upgradeBtn.disabled = false;
+      }
     }
   }
 
@@ -1397,7 +1470,7 @@ class DebateArena {
           <h3>Round Limit Reached</h3>
           <p>Free plan is limited to ${MAX_FREE_ROUNDS} rounds per debate.</p>
           <p>Upgrade to Premium for unlimited debate rounds!</p>
-          <button class="btn-limit-action" onclick="window.authManager.showToast('Premium upgrade coming soon!', 'info')">
+          <button class="btn-limit-action" onclick="window.authManager.handleUpgrade()">
             Upgrade to Premium
           </button>
         </div>
@@ -1455,6 +1528,7 @@ class DebateArena {
     `;
 
     try {
+      const model = this.getSelectedModel();
       const response = await fetch('/api/debate-turn', {
         method: 'POST',
         headers: {
@@ -1465,9 +1539,29 @@ class DebateArena {
           debateId: this.debateId,
           role,
           previousArgument,
-          clarifications: this.clarifications
+          clarifications: this.clarifications,
+          model: model
         })
       });
+
+      // Special handling for JSON responses (clarifications/errors)
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const data = await response.json();
+
+        if (data.needsClarification) {
+          typingEl.remove();
+          this.resetThinkingSidebar();
+
+          // Pause recursion to ask user
+          await this.askClarification(data.question, role, previousArgument);
+          return;
+        }
+
+        if (data.error) {
+          throw new Error(data.error);
+        }
+      }
 
       typingEl.remove();
       this.debateChat.appendChild(messageEl);
@@ -2044,6 +2138,35 @@ class DebateArena {
     this.clarificationModal.classList.add('hidden');
   }
 
+  getSelectedModel() {
+    const selector = document.getElementById('modelSelector');
+    if (selector) {
+      return selector.value;
+    }
+    return 'gpt-4o-mini';
+  }
+
+  async askClarification(question, role, previousArgument) {
+    this.isPaused = true; // Pause loop
+
+    // Configure modal for IN-DEBATE clarification
+    this.pendingClarification = { role, previousArgument };
+
+    this.clarificationClaim.innerHTML = `<span style="color: #666; font-style: italic;">(The ${role} needs more info)</span>`;
+    this.clarificationQuestion.textContent = question;
+    this.clarificationAnswer.value = '';
+
+    // Change button text temporarily
+    const originalBtnText = this.submitClarificationBtn.textContent;
+    this.submitClarificationBtn.textContent = 'Reply & Resume';
+
+    this.clarificationModal.classList.remove('hidden');
+    this.clarificationAnswer.focus();
+
+    // Override submit handler slightly differently or rely on state?
+    // We'll rely on submitClarification() checking for `this.pendingClarification`
+  }
+
   submitClarification() {
     const answer = this.clarificationAnswer.value.trim();
     if (!answer) {
@@ -2053,52 +2176,54 @@ class DebateArena {
 
     const question = this.clarificationQuestion.textContent;
 
-    // Check if this is a pre-debate clarification
+    // Add to clarifications list
+    this.clarifications.push({
+      question,
+      answer,
+      timestamp: Date.now()
+    });
+
+    this.clarificationModal.classList.add('hidden');
+
+    // If this was pre-debate check
     if (this.isPreDebateClarification) {
-      // Store the answer
-      this.preDebateClarifications.push({ question, answer });
-
-      // Remove the answered question and show next
+      // Remove the answered question
       this.pendingPreDebateQuestions.shift();
+      // Look for next question
       this.showNextPreDebateQuestion();
-      return;
     }
+    // If this was in-debate interruption
+    else if (this.pendingClarification) {
+      const { role, previousArgument } = this.pendingClarification;
+      this.pendingClarification = null;
+      this.isPaused = false; // Resume
 
-    // In-debate clarification flow
-    this.clarifications.push({ question, answer });
+      // Add system message to chat
+      const sysMsg = document.createElement('div');
+      sysMsg.className = 'message system-clarification';
+      sysMsg.innerHTML = `
+        <div class="message-content">
+          <strong>Clarification added:</strong> ${this.escapeHtml(answer)}
+        </div>
+      `;
+      this.debateChat.appendChild(sysMsg);
 
-    this.hideClarificationModal();
-
-    // Resume with clarification
-    this.resumeAfterClarification();
+      // Retry the turn immediately
+      this.getDebaterResponse(role, previousArgument);
+    }
   }
 
   skipClarification() {
-    // Check if this is a pre-debate clarification
+    this.clarificationModal.classList.add('hidden');
+
     if (this.isPreDebateClarification) {
-      // Skip this question and show next
       this.pendingPreDebateQuestions.shift();
       this.showNextPreDebateQuestion();
-      return;
-    }
-
-    this.hideClarificationModal();
-
-    // Resume without clarification
-    this.resumeAfterClarification();
-  }
-
-  resumeAfterClarification() {
-    // Unpause and continue the debate
-    this.isPaused = false;
-    this.pauseDebateBtn.textContent = '⏸';
-    this.pauseDebateBtn.title = 'Pause';
-
-    // If we have a pending turn, retry it
-    if (this.pendingClarification) {
-      const { role, previousArgument, retryCallback } = this.pendingClarification;
+    } else if (this.pendingClarification) {
+      const { role, previousArgument } = this.pendingClarification;
       this.pendingClarification = null;
-      retryCallback();
+      this.isPaused = false;
+      this.getDebaterResponse(role, previousArgument);
     }
   }
 }
