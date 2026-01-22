@@ -43,27 +43,44 @@ app.get('/api/config', (req, res) => {
   });
 });
 
-// Create OpenAI client with the provided API key
-// Create OpenAI client (or OpenRouter)
-function getOpenAI(apiKey) {
-  // 1. Check for OpenRouter (Server-side config)
-  if (process.env.OPENROUTER_API_KEY) {
-    return new OpenAI({
-      apiKey: process.env.OPENROUTER_API_KEY,
-      baseURL: 'https://openrouter.ai/api/v1',
-      defaultHeaders: {
-        'HTTP-Referer': process.env.CLIENT_URL || 'http://localhost:3000',
-        'X-Title': 'Debate Room',
-      }
-    });
+// Profile endpoint - uses service role to bypass RLS
+app.get('/api/profile/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'User ID required' });
   }
 
-  // 2. Fallback to Standard OpenAI (Client-side key or Env key)
-  const key = apiKey || process.env.OPENAI_API_KEY;
-  if (!key) return null;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
 
+    if (error) {
+      console.error('Profile fetch error:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    // Return profile or default free status
+    res.json(data || { id: userId, is_premium: false });
+  } catch (error) {
+    console.error('Profile fetch error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create OpenRouter client (server-side only)
+function getOpenAI() {
+  if (!process.env.OPENROUTER_API_KEY) return null;
   return new OpenAI({
-    apiKey: key
+    apiKey: process.env.OPENROUTER_API_KEY,
+    baseURL: 'https://openrouter.ai/api/v1',
+    defaultHeaders: {
+      'HTTP-Referer': process.env.CLIENT_URL || 'http://localhost:3000',
+      'X-Title': 'Debate Room',
+    }
   });
 }
 
@@ -76,6 +93,10 @@ CRITICAL RULES:
 3. Each round, bring ONE new angle with specific evidence
 4. Use real numbers, real companies, real data when possible
 5. If you've mentioned a company before (like Duolingo), don't mention it again
+6. NEVER ASSUME ANYTHING about the startup that isn't explicitly confirmed in the "User Clarifications" section. 
+7. If a detail is missing (e.g., pricing, features), you MUST NOT invent it. Instead, either avoid the point or use a question: "How do you plan to handle X?"
+8. You are forbidden from arguing with hallucinations. If you claim they have "10k users" and it's not in the clarifications, you have failed.
+9. If you need to make an argument about an unconfirmed area, use strict hypotheticals: "Supposing there is a tiered pricing model..." or "Assuming the team has technical expertise..."
 
 Structure each response:
 - First: Directly counter the skeptic's last point (if any)
@@ -111,6 +132,10 @@ CRITICAL RULES:
 3. Each round, bring ONE new angle with specific evidence
 4. Use real numbers, real failures, real market data when possible
 5. If you've mentioned a competitor before (like Khan Academy), don't mention it again
+6. NEVER ASSUME ANYTHING about the startup that isn't explicitly confirmed in the "User Clarifications" section. 
+7. If a detail is missing (e.g., pricing, features), you MUST NOT invent it. Instead, either avoid the point or use a question/attack: "What is the plan for X?"
+8. You are forbidden from arguing with hallucinations. If you claim they have "10k users" and it's not in the clarifications, you have failed.
+9. If you need to make an argument about an unconfirmed area, use strict hypotheticals: "Without a clear pricing model..." or "If they haven't secured funding..."
 
 Structure each response:
 - First: Directly counter the advocate's last point
@@ -181,6 +206,47 @@ Format:
 [Honest 2-3 sentence recommendation - what would need to be true for this to work?]
 </output>`;
 
+// Discovery Phase prompts - ask questions, don't argue
+const ADVOCATE_DISCOVERY = `You're the ADVOCATE helping evaluate a startup idea.
+
+This is the DISCOVERY PHASE. Your job is to ASK QUESTIONS - not make arguments yet.
+
+Ask 2-3 questions that will help you build a strong case FOR the startup:
+- What unique advantages or strengths do they have?
+- What traction, team, or technology exists?
+- What's the pricing model or revenue potential?
+
+Format your response as a JSON array of questions:
+{
+  "questions": [
+    "Question 1 about their strengths...",
+    "Question 2 about their advantages...",
+    "Question 3 about their potential..."
+  ]
+}
+
+Be friendly and curious. These questions help the founder clarify their pitch.`;
+
+const SKEPTIC_DISCOVERY = `You're the SKEPTIC helping stress-test a startup idea.
+
+This is the DISCOVERY PHASE. Your job is to ASK QUESTIONS - not make arguments yet.
+
+Ask 2-3 questions that probe potential weaknesses or risks:
+- What's the competition like? Who else is doing this?
+- What's the go-to-market strategy?
+- What are the biggest risks or unknowns?
+
+Format your response as a JSON array of questions:
+{
+  "questions": [
+    "Question 1 about risks...",
+    "Question 2 about competition...",
+    "Question 3 about challenges..."
+  ]
+}
+
+Be direct but fair. These questions help identify blind spots.`;
+
 // Store conversation history for debates
 const debates = new Map();
 
@@ -221,12 +287,10 @@ app.post('/api/start-debate', async (req, res) => {
 // Pre-debate clarification - asks questions BEFORE making any assumptions
 app.post('/api/analyze-idea', async (req, res) => {
   const { idea, files } = req.body;
-
-  const apiKey = req.headers['x-api-key'];
-  const client = getOpenAI(apiKey);
+  const client = getOpenAI();
 
   if (!client) {
-    return res.status(400).json({ error: 'OpenAI API key required' });
+    return res.status(500).json({ error: 'Server is not configured with OPENROUTER_API_KEY' });
   }
 
   // Build file context if any
@@ -252,7 +316,7 @@ app.post('/api/analyze-idea', async (req, res) => {
     console.log('🔍 Analyzing idea for clarification:', idea);
 
     const analyzePrompt = `Analyze if this startup idea is understandable enough to debate.
-
+    
 IDEA: "${idea}"${fileContext}
 
 RULE: Return empty questions array UNLESS the idea is just a single ambiguous word/name with NO description.
@@ -261,19 +325,23 @@ Examples - return {"questions": []}:
 - "AI tutoring platform" ✓ clear
 - "Food delivery app" ✓ clear
 - "AI platform that teaches students" ✓ clear
-- "SaaS for project management" ✓ clear
-- "Subscription box for pets" ✓ clear
-- "Platform connecting freelancers with clients" ✓ clear
 
 Examples - ask ONE question:
 - "rubberduck" → ask what it is
 - "moonshot" → ask what it is
-- "xyz" → ask what it is
 
 If ANY descriptive words exist (platform, app, service, tool, AI, teaching, etc.), the idea is clear enough.
 
 Respond JSON only:
-{"questions": []} or {"questions": [{"claim": "unknown product", "question": "What is [name]?"}]}`;
+{
+  "questions": [],
+  "reasoning": "Idea provides sufficient context about [problem/solution]..."
+}
+OR
+{
+  "questions": [{"claim": "unknown product", "question": "What is [name]?"}],
+  "reasoning": "Idea is only a single name with no description"
+}`;
 
     const response = await client.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -287,6 +355,9 @@ Respond JSON only:
 
     const result = JSON.parse(response.choices[0]?.message?.content || '{"questions": []}');
     console.log('🔍 Pre-debate analysis result:', result);
+    if (result.reasoning) {
+      console.log('🤔 Analysis reasoning:', result.reasoning);
+    }
     res.json(result);
   } catch (error) {
     console.error('Pre-debate analysis error:', error);
@@ -297,12 +368,10 @@ Respond JSON only:
 // Analyze image using GPT-4 Vision
 app.post('/api/analyze-image', async (req, res) => {
   const { imageData, context } = req.body;
-
-  const apiKey = req.headers['x-api-key'];
-  const client = getOpenAI(apiKey);
+  const client = getOpenAI();
 
   if (!client) {
-    return res.status(400).json({ error: 'OpenAI API key required' });
+    return res.status(500).json({ error: 'Server is not configured with OPENROUTER_API_KEY' });
   }
 
   try {
@@ -339,9 +408,10 @@ app.post('/api/analyze-image', async (req, res) => {
 
 // Fact-checking endpoint - checks if response contains unsupported claims
 app.post('/api/check-facts', async (req, res) => {
-  const { debateId, draftResponse, idea, fileContext: clientFileContext } = req.body;
+  const { debateId, draftResponse, idea, fileContext: clientFileContext, role } = req.body;
+  const roleLabel = role === 'advocate' ? 'Advocate' : 'Skeptic';
 
-  console.log('🔍 Fact-check request for debate:', debateId);
+  console.log('🔍 Fact-check request for debate:', debateId, 'Role:', role);
 
   // Try to get debate from map, or use provided context
   let debate = debates.get(debateId);
@@ -355,65 +425,141 @@ app.post('/api/check-facts', async (req, res) => {
     return res.status(404).json({ error: 'Debate not found' });
   }
 
-  const apiKey = req.headers['x-api-key'];
-  const client = getOpenAI(apiKey);
+  const client = getOpenAI();
   if (!client) {
-    return res.status(400).json({ error: 'OpenAI API key required' });
+    return res.status(500).json({ error: 'Server is not configured with OPENROUTER_API_KEY' });
   }
 
   try {
     const fileContext = debate.fileContext || '';
     const availableContext = `Startup idea: "${debate.idea}"${fileContext}`;
 
-    console.log('📋 Fact-checking draft response...');
+    // Include already-confirmed clarifications so we don't re-ask
+    const confirmedClarifications = debate.clarifications || [];
+    const confirmedContext = confirmedClarifications.length > 0
+      ? '\n\nALREADY CONFIRMED BY FOUNDER:\n' + confirmedClarifications.map(c => `- ${c.question}: "${c.answer}"`).join('\n')
+      : '';
 
-    const factCheckPrompt = `You are helping a founder clarify their startup idea.
+    console.log(`📋 Fact-checking [${roleLabel}] draft response...`);
 
-STARTUP IDEA PROVIDED:
-${availableContext}
+    const factCheckPrompt = `You are a strict investor evaluating a startup idea.
+    
+DRAFT ARGUMENT FROM THE ${roleLabel.toUpperCase()}:
+"${draftResponse}"
 
-DRAFT ARGUMENT:
-${draftResponse}
+CONTEXT:
+${availableContext}${confirmedContext}
 
-YOUR TASK:
-Check if the argument makes assumptions about THE FOUNDER'S OWN STARTUP that aren't in their description.
+YOUR MISSION:
+Identify specific claims about the startup's capabilities, features, or team that are UNCONFIRMED. 
 
-ONLY FLAG assumptions about the startup itself:
-✓ Business model or pricing (e.g., "the subscription costs $X/month")
-✓ Target customers (e.g., "targeting enterprise clients")  
-✓ How the product works (e.g., "using machine learning to...")
-✓ Team or company details (e.g., "the team has 10 years experience")
-✓ Specific features or capabilities claimed
+STRICT RULES:
+1. NEVER ask about something already in the "ALREADY CONFIRMED BY FOUNDER" section above.
+2. IMPORTANT: If the founder answered "unsure" to a previous question, that fact is now considered "UNKNOWN". Do NOT flag it again as a hallucination or ask about it again. Accept the debater's use of it as a logical possibility or critique.
+3. DISTINGUISH between "Arguments" and "Claims":
+   - Argument: "You have no pricing model." (This is a critique, NOT a hallucination. Do NOT flag.)
+   - Claim: "You have a $10/month pricing model." (This is a fact. If unconfirmed, FLAG it.)
+4. If the debater makes a NEW technical claim (e.g., "AI agents handle complex workflows"), ask: "Can you elaborate on how your AI agents handle specific complex workflows?"
+5. Avoid "Is it true...". Use "How...", "Can you elaborate on...", "What is the specific plan for...", etc.
+6. If the draft argument is consistent with confirmed facts or is purely a logical critique, return { "clarifications": [] }.
 
-DO NOT FLAG - these are fine to assume:
-✗ Market size or industry projections
-✗ General statistics or research
-✗ Competitor information
-✗ Industry trends
-✗ Economic data
-
-Respond with JSON:
+Return UP TO 3 questions (JSON format). 
+For the "claim" field, prepend the debater's name:
 {
-  "needsClarification": true or false,
-  "claim": "the specific startup assumption (if any)",
-  "question": "a simple question to the founder about THEIR startup (if needsClarification is true)"
-}`;
+  "clarifications": [
+    { "claim": "The ${roleLabel} suggests: [specific claim]", "question": "Deeper, evaluative question..." }
+  ]
+}
+
+If everything is confirmed, consistent, or a logical argument, return: { "clarifications": [] }`;
 
     const response = await client.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
-        { role: 'system', content: 'You are a helpful fact-checker. Always respond with valid JSON only. Be proactive about identifying assumptions that should be verified.' },
+        { role: 'system', content: 'You are a strict fact-checker. You MUST NOT ask questions about information already confirmed in the "Confirmed Clarifications" section. If a claim is consistent with confirmed info, it is NOT a hallucination. Always respond with valid JSON only.' },
         { role: 'user', content: factCheckPrompt }
       ],
       response_format: { type: 'json_object' },
-      max_tokens: 300
+      max_tokens: 500
     });
 
-    const result = JSON.parse(response.choices[0]?.message?.content || '{}');
+    const result = JSON.parse(response.choices[0]?.message?.content || '{"clarifications": []}');
     console.log('📋 Fact-check result:', result);
     res.json(result);
   } catch (error) {
     console.error('Fact-check error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Discovery endpoint - asks questions from both sides simultaneously
+app.post('/api/discovery', async (req, res) => {
+  const { idea, files } = req.body;
+  const client = getOpenAI();
+
+  if (!client) {
+    return res.status(500).json({ error: 'Server is not configured with OPENROUTER_API_KEY' });
+  }
+
+  // Build context from files if any
+  let fileContext = '';
+  if (files && files.length > 0) {
+    fileContext = '\n\n--- Context from Files ---\n' + files.map(f => f.content).join('\n\n');
+  }
+
+  try {
+    // Call both Advocate and Skeptic in parallel
+    const [advocateRes, skepticRes] = await Promise.race([
+      Promise.all([
+        client.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: ADVOCATE_DISCOVERY },
+            { role: 'user', content: `Startup idea: "${idea}"${fileContext}` }
+          ],
+          response_format: { type: 'json_object' }
+        }),
+        client.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: SKEPTIC_DISCOVERY },
+            { role: 'user', content: `Startup idea: "${idea}"${fileContext}` }
+          ],
+          response_format: { type: 'json_object' }
+        })
+      ]),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Discovery timeout')), 30000))
+    ]);
+
+    const advocateQuestions = JSON.parse(advocateRes.choices[0]?.message?.content || '{"questions": []}').questions || [];
+    const skepticQuestions = JSON.parse(skepticRes.choices[0]?.message?.content || '{"questions": []}').questions || [];
+
+    // Combine and deduplicate questions while preserving role
+    const uniqueQuestions = [];
+    const seen = new Set();
+
+    const processQuestions = (questions, role) => {
+      for (const q of questions) {
+        const normalized = q.toLowerCase().replace(/[?.,]/g, '').trim();
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          uniqueQuestions.push({ question: q, role });
+        }
+      }
+    };
+
+    processQuestions(advocateQuestions, 'Advocate');
+    processQuestions(skepticQuestions, 'Skeptic');
+
+    // Map to the format the frontend modal expects
+    const clarifications = uniqueQuestions.map(item => ({
+      claim: `Founder Question`,
+      question: item.question
+    }));
+
+    res.json({ clarifications });
+  } catch (error) {
+    console.error('Discovery error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -441,18 +587,20 @@ app.post('/api/debate-turn', async (req, res) => {
   // Include file context if available
   const fileContext = debate.fileContext || '';
 
-  // Include any clarifications provided by the user
-  let clarificationText = '';
+  // Handle clarifications - prevent duplicates
   if (clarifications && clarifications.length > 0) {
-    clarificationText = '\n\n--- User Clarifications ---\n' +
-      clarifications.map(c => `Q: ${c.question}\nA: ${c.answer}`).join('\n\n');
-    // Store clarifications in debate for future turns
-    debate.clarifications = [...(debate.clarifications || []), ...clarifications];
+    // Only add clarifications that aren't already stored (based on the question text)
+    const existingQuestions = new Set((debate.clarifications || []).map(c => c.question));
+    const newClarifications = clarifications.filter(c => !existingQuestions.has(c.question));
+
+    if (newClarifications.length > 0) {
+      debate.clarifications = [...(debate.clarifications || []), ...newClarifications];
+    }
   }
 
-  // Include previous clarifications
+  let clarificationText = '';
   if (debate.clarifications && debate.clarifications.length > 0) {
-    clarificationText = '\n\n--- User Clarifications ---\n' +
+    clarificationText = '\n\n--- Confirmed Clarifications ---\n' +
       debate.clarifications.map(c => `Q: ${c.question}\nA: ${c.answer}`).join('\n\n');
   }
 
@@ -477,11 +625,10 @@ Counter their point. Add ONE new argument.`;
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  // Get API key from header or env
-  const apiKey = req.headers['x-api-key'];
-  const client = getOpenAI(apiKey);
+  // Server-side OpenRouter only
+  const client = getOpenAI();
   if (!client) {
-    res.write(`data: ${JSON.stringify({ error: 'OpenAI API key not provided. Please enter your API key.', done: true })}\n\n`);
+    res.write(`data: ${JSON.stringify({ error: 'Server is not configured with OPENROUTER_API_KEY', done: true })}\n\n`);
     res.end();
     return;
   }
@@ -489,6 +636,7 @@ Counter their point. Add ONE new argument.`;
   try {
     const debateModel = model || 'gpt-4o-mini';
     console.log(`🚀 [${role.toUpperCase()}] Calling OpenAI API (${debateModel})...`);
+    // console.log(`DEBUG: User Message: ${userMessage.substring(0, 500)}...`);
 
     const completion = await client.chat.completions.create({
       model: debateModel,
@@ -501,6 +649,7 @@ Counter their point. Add ONE new argument.`;
     });
 
     const fullResponse = completion.choices[0]?.message?.content || '';
+    console.log(`🤖 [${role.toUpperCase()}] LLM responded with ${fullResponse.length} characters.`);
 
     // Check for clarification request
     const clarificationMatch = fullResponse.match(/<clarification>([\s\S]*?)<\/clarification>/);
@@ -604,11 +753,10 @@ Evaluate the debate quality and pick a winner.`;
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  // Get API key from header or env
-  const apiKey = req.headers['x-api-key'];
-  const client = getOpenAI(apiKey);
+  // Server-side OpenRouter only
+  const client = getOpenAI();
   if (!client) {
-    res.write(`data: ${JSON.stringify({ error: 'OpenAI API key not provided. Please enter your API key.', done: true })}\n\n`);
+    res.write(`data: ${JSON.stringify({ error: 'Server is not configured with OPENROUTER_API_KEY', done: true })}\n\n`);
     res.end();
     return;
   }
@@ -643,7 +791,7 @@ Evaluate the debate quality and pick a winner.`;
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', hasApiKey: !!process.env.OPENAI_API_KEY });
+  res.json({ status: 'ok', hasOpenRouterKey: !!process.env.OPENROUTER_API_KEY });
 });
 
 // ==========================================
@@ -728,9 +876,7 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`⚖️ The Debate Room running at http://localhost:${PORT}`);
-  if (!process.env.OPENAI_API_KEY) {
-    console.log('⚠️  Warning: OPENAI_API_KEY not set in .env file');
-  }
+  if (!process.env.OPENROUTER_API_KEY) console.log('⚠️  Warning: OPENROUTER_API_KEY not set in .env file');
   if (!process.env.STRIPE_SECRET_KEY) {
     console.log('⚠️  Warning: STRIPE_SECRET_KEY not set in .env file');
   }

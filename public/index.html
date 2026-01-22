@@ -47,12 +47,7 @@
             <p class="file-limit-hint" id="fileLimitHint"></p>
           </div>
 
-          <div class="api-key-row">
-            <input type="password" id="apiKeyInput" placeholder="OpenAI API Key (sk-...)" autocomplete="off" />
-            <button type="button" id="toggleApiKey" class="btn-toggle-key" title="Show/hide key">👁</button>
-          </div>
-          <p class="api-key-hint">Your key is stored locally and never sent to our servers. <a
-              href="https://platform.openai.com/api-keys" target="_blank">Get a key →</a></p>
+
           <div class="model-selector-row">
             <label for="modelSelector" class="model-selector-label">Model:</label>
             <select id="modelSelector" class="model-selector" disabled>
@@ -184,19 +179,17 @@
       <div class="clarification-header">
         <span class="clarification-icon">❓</span>
         <h3>Quick Clarification</h3>
-        <p class="clarification-subtitle">Help us get the facts right</p>
+        <p class="clarification-subtitle">Help us get the facts right. If unsure, simply write "unsure".</p>
       </div>
-      <div class="clarification-body">
+      <div class="clarification-body" id="clarificationQuestionsContainer">
+        <!-- Dynamic questions will be injected here -->
         <p class="clarification-claim" id="clarificationClaim"></p>
         <label class="clarification-label" id="clarificationQuestion"></label>
         <textarea id="clarificationAnswer" class="clarification-input" placeholder="Type your answer..."
           rows="3"></textarea>
       </div>
       <div class="clarification-footer">
-        <button id="skipClarification" class="btn-secondary btn-skip">
-          Skip (use assumption)
-        </button>
-        <button id="submitClarification" class="btn-primary">
+        <button id="submitClarification" class="btn-primary" style="flex: 1;">
           Continue →
         </button>
       </div>

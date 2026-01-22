@@ -22,7 +22,7 @@ npm install
 
 ### 2. Configure API Key
 
-Copy the example environment file and add your OpenAI API key:
+Copy the example environment file and add your OpenRouter API key:
 
 ```bash
 cp .env.example .env
@@ -30,10 +30,10 @@ cp .env.example .env
 
 Edit `.env` and add your API key:
 ```
-OPENAI_API_KEY=sk-your-actual-api-key-here
+OPENROUTER_API_KEY=sk-or-your-actual-api-key-here
 ```
 
-Get an API key at: https://platform.openai.com/api-keys
+Get an API key at: https://openrouter.ai/keys
 
 ### 3. Start the Server
 
@@ -56,7 +56,7 @@ Navigate to: http://localhost:3000
 
 - **Backend**: Node.js + Express
 - **Frontend**: Vanilla HTML/CSS/JS
-- **AI**: OpenAI GPT-4o-mini
+- **AI**: OpenRouter (model routing)
 - **Streaming**: Server-Sent Events (SSE)
 
 ## Customization
