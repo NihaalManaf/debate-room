@@ -4,6 +4,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import Stripe from 'stripe';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
@@ -12,8 +14,26 @@ const __dirname = dirname(__filename);
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
+
+// Use JSON parser for all routes except webhook
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/webhook') {
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
 app.use(express.static(join(__dirname, 'public')));
+
+// Initialize Stripe
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+// Initialize Supabase Admin (Service Role) to update user profiles securely
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY // Need this env var for admin access
+);
 
 // Supabase config endpoint (exposes public keys to frontend)
 app.get('/api/config', (req, res) => {
@@ -24,8 +44,21 @@ app.get('/api/config', (req, res) => {
 });
 
 // Create OpenAI client with the provided API key
+// Create OpenAI client (or OpenRouter)
 function getOpenAI(apiKey) {
-  // Use provided key or fall back to env
+  // 1. Check for OpenRouter (Server-side config)
+  if (process.env.OPENROUTER_API_KEY) {
+    return new OpenAI({
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseURL: 'https://openrouter.ai/api/v1',
+      defaultHeaders: {
+        'HTTP-Referer': process.env.CLIENT_URL || 'http://localhost:3000',
+        'X-Title': 'Debate Room',
+      }
+    });
+  }
+
+  // 2. Fallback to Standard OpenAI (Client-side key or Env key)
   const key = apiKey || process.env.OPENAI_API_KEY;
   if (!key) return null;
 
@@ -59,9 +92,16 @@ New angles to explore (use different ones each round):
 
 Keep it punchy. 2-3 sentences per point. No fluff.
 
+CLARIFICATIONS:
+If the user's input (startup idea + clarifications) is too vague to form a specific argument, you can ASK for clarification instead of arguing.
+Format: <clarification>What is the specific target market?</clarification>
+Only do this if you ABSOLUTELY cannot proceed without more info.
+
 Format:
 <thinking>What did skeptic just say? How do I counter? What NEW point can I make?</thinking>
-<output>Your response - be specific, be fresh, don't repeat yourself</output>`;
+<output>Your response - be specific, be fresh, don't repeat yourself</output>
+OR (only if genuinely confused):
+<clarification>Your question here</clarification>`;
 
 const SKEPTIC_SYSTEM = `You're the SKEPTIC arguing why this startup will fail.
 
@@ -88,9 +128,16 @@ New angles to explore (use different ones each round):
 
 Keep it punchy. 2-3 sentences per point. No fluff.
 
+CLARIFICATIONS:
+If the user's input (startup idea + clarifications) is too vague to form a specific attack, you can ASK for clarification instead of arguing.
+Format: <clarification>What is the specific target market?</clarification>
+Only do this if you ABSOLUTELY cannot proceed without more info.
+
 Format:
 <thinking>What did advocate just say? How do I counter? What NEW attack can I make?</thinking>
-<output>Your response - be specific, be fresh, don't repeat yourself</output>`;
+<output>Your response - be specific, be fresh, don't repeat yourself</output>
+OR (only if genuinely confused):
+<clarification>Your question here</clarification>`;
 
 const JUDGE_SYSTEM = `You're the JUDGE - a seasoned investor who's seen thousands of pitches.
 
@@ -372,7 +419,7 @@ Respond with JSON:
 });
 
 app.post('/api/debate-turn', async (req, res) => {
-  const { debateId, role, previousArgument, clarifications } = req.body;
+  const { debateId, role, previousArgument, clarifications, model } = req.body;
 
   console.log(`\n📝 [${role.toUpperCase()}] Turn requested for debate ${debateId}`);
 
@@ -440,29 +487,49 @@ Counter their point. Add ONE new argument.`;
   }
 
   try {
-    console.log(`🚀 [${role.toUpperCase()}] Calling OpenAI API...`);
+    const debateModel = model || 'gpt-4o-mini';
+    console.log(`🚀 [${role.toUpperCase()}] Calling OpenAI API (${debateModel})...`);
 
-    const stream = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
+    const completion = await client.chat.completions.create({
+      model: debateModel,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage }
       ],
-      stream: true,
+      stream: false, // Turn off streaming initially to check for clarifications
       max_tokens: 800
     });
 
-    let fullResponse = '';
-    let chunkCount = 0;
+    const fullResponse = completion.choices[0]?.message?.content || '';
 
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
-      fullResponse += content;
-      chunkCount++;
-      res.write(`data: ${JSON.stringify({ content, done: false })}\n\n`);
+    // Check for clarification request
+    const clarificationMatch = fullResponse.match(/<clarification>([\s\S]*?)<\/clarification>/);
+    if (clarificationMatch) {
+      console.log(`❓ [${role.toUpperCase()}] Requesting clarification: ${clarificationMatch[1]}`);
+      // Send a distinct event for clarification
+      res.json({
+        needsClarification: true,
+        question: clarificationMatch[1],
+        role: role
+      });
+      return;
     }
 
-    console.log(`✅ [${role.toUpperCase()}] Response complete: ${chunkCount} chunks, ${fullResponse.length} chars`);
+    // If no clarification, stream it back like a normal response (simulated stream for compatibility)
+    // Or just convert to stream since frontend expects SSE
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    // Simulate streaming the already-received response
+    const chunkSize = 20;
+    for (let i = 0; i < fullResponse.length; i += chunkSize) {
+      const chunk = fullResponse.substring(i, i + chunkSize);
+      res.write(`data: ${JSON.stringify({ content: chunk, done: false })}\n\n`);
+      await new Promise(r => setTimeout(r, 10)); // Tiny delay for effect
+    }
+
+    console.log(`✅ [${role.toUpperCase()}] Response complete: ${fullResponse.length} chars`);
 
     // Log first 300 chars of response to debug format issues
     console.log(`📄 [${role.toUpperCase()}] Response preview: ${fullResponse.substring(0, 300)}...`);
@@ -579,10 +646,92 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', hasApiKey: !!process.env.OPENAI_API_KEY });
 });
 
+// ==========================================
+// STRIPE INTEGRATION
+// ==========================================
+
+// Create Checkout Session
+app.post('/api/create-checkout-session', async (req, res) => {
+  const { userId, email } = req.body;
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+
+  if (!userId || !email) {
+    return res.status(400).json({ error: 'Missing user information' });
+  }
+
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'subscription',
+      line_items: [
+        {
+          price: process.env.STRIPE_PRICE_ID, // Use Price ID from Product Catalog
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        userId: userId,
+      },
+      customer_email: email,
+      success_url: `${clientUrl}/?success=true`,
+      cancel_url: `${clientUrl}/?canceled=true`,
+    });
+
+    res.json({ url: session.url });
+  } catch (error) {
+    console.error('Stripe Checkout error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Stripe Webhook (Must use raw body)
+app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error(`Webhook signature verification failed: ${err.message}`);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Handle the event
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const userId = session.metadata.userId;
+
+    console.log(`💰 Payment success for user: ${userId}`);
+
+    // Update user profile in Supabase
+    try {
+      const { error } = await supabaseAdmin
+        .from('profiles')
+        .update({ is_premium: true })
+        .eq('id', userId);
+
+      if (error) {
+        console.error('Failed to update Supabase profile:', error);
+      } else {
+        console.log('✅ User upgraded to Premium');
+      }
+    } catch (dbError) {
+      console.error('Database error during webhook:', dbError);
+    }
+  }
+
+  res.json({ received: true });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`⚖️ The Debate Room running at http://localhost:${PORT}`);
   if (!process.env.OPENAI_API_KEY) {
     console.log('⚠️  Warning: OPENAI_API_KEY not set in .env file');
+  }
+  if (!process.env.STRIPE_SECRET_KEY) {
+    console.log('⚠️  Warning: STRIPE_SECRET_KEY not set in .env file');
   }
 });
