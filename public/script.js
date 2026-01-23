@@ -5,6 +5,7 @@
 // ============================================
 const MAX_FREE_ROUNDS = 3; // Set to 10 for production
 const MAX_FREE_FILES = 1;  // Free users can only upload 1 file
+const MAX_PREMIUM_FILES = 10; // Premium users get 10 files
 const MAX_FILE_SIZE_MB = 5;
 const ALLOWED_FILE_TYPES = [
   'image/jpeg', 'image/png', 'image/webp', 'image/gif', // Images
@@ -12,6 +13,13 @@ const ALLOWED_FILE_TYPES = [
   'text/plain',                                           // .txt
   'text/rtf', 'application/rtf'                          // .rtf
 ];
+
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = String(text ?? '');
+  return div.innerHTML;
+}
 
 // ============================================
 // FILE MANAGER
@@ -61,8 +69,9 @@ class FileManager {
 
   getMaxFiles() {
     const auth = window.authManager;
+    // explicit check for premium
     if (auth && auth.isPremium()) {
-      return Infinity; // Unlimited for premium
+      return MAX_PREMIUM_FILES;
     }
     return MAX_FREE_FILES;
   }
@@ -197,18 +206,13 @@ class FileManager {
   }
 
   async analyzeImage(base64Data) {
-    // Get API key from the debate arena
-    const apiKey = document.getElementById('apiKeyInput')?.value?.trim();
-    if (!apiKey) {
-      return '[Image attached - enter API key to analyze]';
-    }
+
 
     try {
       const response = await fetch('/api/analyze-image', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiKey
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           imageData: base64Data,
@@ -296,15 +300,20 @@ class FileManager {
     const isSignedIn = auth && auth.user;
 
     if (isPremium) {
-      this.limitHint.textContent = '';
-      this.limitHint.className = 'file-limit-hint';
+      if (this.files.length >= MAX_PREMIUM_FILES) {
+        this.limitHint.textContent = 'Maximum files reached (10/10)';
+        this.limitHint.className = 'file-limit-hint warning';
+      } else {
+        this.limitHint.textContent = `${this.files.length}/${MAX_PREMIUM_FILES} files (Premium)`;
+        this.limitHint.className = 'file-limit-hint';
+      }
     } else if (this.files.length >= MAX_FREE_FILES) {
-      this.limitHint.textContent = isSignedIn
-        ? 'Upgrade to Premium for unlimited files'
-        : 'Sign in for more file uploads';
+      this.limitHint.innerHTML = isSignedIn
+        ? `Limit reached (1/1). <a href="#" onclick="window.authManager.handleUpgrade(); return false;">Upgrade for 10 files</a>`
+        : `Limit reached (1/1). <a href="#" onclick="document.getElementById('authCard').scrollIntoView({behavior: 'smooth'}); return false;">Sign in for more</a>`;
       this.limitHint.className = 'file-limit-hint warning';
     } else {
-      this.limitHint.textContent = `${this.files.length}/${MAX_FREE_FILES} file${MAX_FREE_FILES > 1 ? 's' : ''}`;
+      this.limitHint.textContent = `${this.files.length}/${MAX_FREE_FILES} file`;
       this.limitHint.className = 'file-limit-hint';
     }
   }
@@ -352,6 +361,8 @@ class AuthManager {
   }
 
   async init() {
+    this.isInitializing = true; // Prevent premature UI updates
+
     // Fetch Supabase config from server
     try {
       const response = await fetch('/api/config');
@@ -360,8 +371,21 @@ class AuthManager {
       if (config.supabaseUrl && config.supabaseAnonKey) {
         this.supabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
 
-        // Listen for auth state changes
+        // Check initial session FIRST
+        const { data: { session } } = await this.supabase.auth.getSession();
+        this.session = session;
+        this.user = session?.user || null;
+
+        // Fetch profile if logged in (before setting up listeners)
+        if (this.user) {
+          await this.fetchProfile();
+        }
+
+        // Listen for auth state changes AFTER initial load
         this.supabase.auth.onAuthStateChange(async (event, session) => {
+          // Skip the initial SIGNED_IN event since we already handled it
+          if (this.isInitializing) return;
+
           this.session = session;
           this.user = session?.user || null;
 
@@ -374,16 +398,6 @@ class AuthManager {
 
           this.updateUI();
         });
-
-        // Check initial session
-        const { data: { session } } = await this.supabase.auth.getSession();
-        this.session = session;
-        this.user = session?.user || null;
-
-        // Fetch profile if logged in
-        if (this.user) {
-          await this.fetchProfile();
-        }
       } else {
         console.log('Supabase not configured');
       }
@@ -391,7 +405,7 @@ class AuthManager {
       console.error('Failed to initialize Supabase:', error);
     }
 
-    this.updateUI();
+    this.isInitializing = false; // Mark initialization complete
     this.updateUI();
     this.setupEventListeners();
     this.checkForPaymentStatus();
@@ -411,37 +425,31 @@ class AuthManager {
   }
 
   async fetchProfile() {
-    if (!this.supabase || !this.user) {
+    console.log('🔍 fetchProfile called, user:', this.user?.id);
+    if (!this.user) {
+      console.log('🔍 No user, setting profile to free');
       this.profile = { is_premium: false };
       return;
     }
 
-    // Set a timeout to prevent hanging
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
-    );
-
     try {
-      const queryPromise = this.supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', this.user.id)
-        .maybeSingle();
+      // Use server endpoint to bypass RLS
+      const response = await fetch(`/api/profile/${this.user.id}`);
 
-      const { data, error } = await Promise.race([queryPromise, timeoutPromise]);
-
-      if (error) {
+      if (!response.ok) {
+        console.log('🔍 Profile fetch failed:', response.status);
         this.profile = { is_premium: false };
-      } else if (!data) {
-        // Profile doesn't exist - try to create it
-        await this.createProfile();
-      } else {
-        this.profile = data;
+        return;
       }
+
+      const data = await response.json();
+      console.log('🔍 Profile fetched:', data);
+      this.profile = data;
     } catch (error) {
       console.error('Failed to fetch profile:', error.message);
       this.profile = { is_premium: false };
     }
+    console.log('🔍 Final profile state:', this.profile);
   }
 
   async createProfile() {
@@ -647,6 +655,11 @@ class AuthManager {
         modelSelector.value = 'openai/gpt-4o-mini'; // Reset to default
         modelLock.classList.remove('hidden');
       }
+    }
+
+    // Update File Manager limits if it exists
+    if (window.fileManager) {
+      window.fileManager.updateLimitHint();
     }
 
     if (this.user) {
@@ -1042,6 +1055,10 @@ class DebateArena {
     this.preDebateIdea = null;
     this.preDebateFiles = null;
 
+    // Track if a round was interrupted mid-way
+    this.interruptedTurn = null; // null, 'advocate-pending', or 'skeptic-pending'
+    this.discoveryDone = false;
+
     this.init();
   }
 
@@ -1050,116 +1067,66 @@ class DebateArena {
     this.ideaSection = document.getElementById('ideaSection');
     this.debateLayout = document.getElementById('debateLayout');
     this.ideaInput = document.getElementById('ideaInput');
-    this.apiKeyInput = document.getElementById('apiKeyInput');
-    this.toggleApiKeyBtn = document.getElementById('toggleApiKey');
     this.startDebateBtn = document.getElementById('startDebate');
-    this.newDebateBtn = document.getElementById('newDebate');
-    this.pauseDebateBtn = document.getElementById('pauseDebate');
-    this.judgeDebateBtn = document.getElementById('judgeDebate');
+
+    this.debateChat = document.getElementById('debateChat');
     this.currentIdeaEl = document.getElementById('currentIdea');
     this.roundNumberEl = document.getElementById('roundNumber');
-    this.debateChat = document.getElementById('debateChat');
+    this.pauseDebateBtn = document.getElementById('pauseDebate');
+    this.judgeDebateBtn = document.getElementById('judgeDebate');
+    this.newDebateBtn = document.getElementById('newDebate');
 
-    // Thinking sidebar elements
+    this.verdictPanel = document.getElementById('verdictPanel');
+    this.verdictContent = document.getElementById('verdictContent');
+    this.closeVerdictBtn = document.getElementById('closeVerdict');
+
     this.thinkingEmpty = document.getElementById('thinkingEmpty');
     this.thinkingActive = document.getElementById('thinkingActive');
     this.thinkingWho = document.getElementById('thinkingWho');
     this.thinkingContent = document.getElementById('thinkingContent');
 
-    // Verdict panel elements
-    this.verdictPanel = document.getElementById('verdictPanel');
-    this.verdictContent = document.getElementById('verdictContent');
-    this.closeVerdictBtn = document.getElementById('closeVerdict');
-
-    // Clarification modal elements
     this.clarificationModal = document.getElementById('clarificationModal');
+    this.clarificationQuestionsContainer = document.getElementById('clarificationQuestionsContainer');
     this.clarificationClaim = document.getElementById('clarificationClaim');
     this.clarificationQuestion = document.getElementById('clarificationQuestion');
     this.clarificationAnswer = document.getElementById('clarificationAnswer');
-    this.submitClarificationBtn = document.getElementById('submitClarification');
     this.skipClarificationBtn = document.getElementById('skipClarification');
+    this.submitClarificationBtn = document.getElementById('submitClarification');
 
-    // Event Listeners
-    this.startDebateBtn.addEventListener('click', () => this.startDebate());
-
-    // Clarification modal handlers
-    if (this.submitClarificationBtn) {
-      this.submitClarificationBtn.addEventListener('click', () => this.submitClarification());
-    }
-    if (this.skipClarificationBtn) {
-      this.skipClarificationBtn.addEventListener('click', () => this.skipClarification());
-    }
-    this.newDebateBtn.addEventListener('click', () => this.resetDebate());
-    this.pauseDebateBtn.addEventListener('click', () => this.togglePause());
-    this.judgeDebateBtn.addEventListener('click', () => this.callJudge());
-    this.closeVerdictBtn.addEventListener('click', () => this.closeVerdict());
-
-    // API Key toggle visibility
-    this.toggleApiKeyBtn.addEventListener('click', () => {
-      if (this.apiKeyInput.type === 'password') {
-        this.apiKeyInput.type = 'text';
-        this.toggleApiKeyBtn.textContent = '🔒';
-      } else {
-        this.apiKeyInput.type = 'password';
-        this.toggleApiKeyBtn.textContent = '👁';
-      }
-    });
-
-    // Save API key to localStorage when changed
-    this.apiKeyInput.addEventListener('change', () => {
-      if (this.apiKeyInput.value) {
-        localStorage.setItem('openai_api_key', this.apiKeyInput.value);
-      }
-    });
-
-    // Load API key from localStorage
-    const savedKey = localStorage.getItem('openai_api_key');
-    if (savedKey) {
-      this.apiKeyInput.value = savedKey;
-    }
 
     // Allow Enter to start debate
-    this.ideaInput.addEventListener('keydown', (e) => {
+    this.ideaInput?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.startDebate();
       }
     });
+
+    this.startDebateBtn?.addEventListener('click', () => this.startDebate());
+    this.pauseDebateBtn?.addEventListener('click', () => this.togglePause());
+    this.judgeDebateBtn?.addEventListener('click', () => this.callJudge());
+    this.newDebateBtn?.addEventListener('click', () => this.resetDebate());
+    this.closeVerdictBtn?.addEventListener('click', () => this.closeVerdict());
+    this.skipClarificationBtn?.addEventListener('click', () => this.skipClarification());
+    this.submitClarificationBtn?.addEventListener('click', () => this.submitClarification());
   }
 
   async checkHealth() {
     try {
       const response = await fetch('/api/health');
       const data = await response.json();
-      if (!data.hasApiKey) {
-        this.showError('OpenAI API key not configured. Please add OPENAI_API_KEY to your .env file.');
-      }
+
     } catch (error) {
       console.error('Health check failed:', error);
     }
   }
 
-  getApiKey() {
-    return this.apiKeyInput.value.trim();
-  }
+
 
   async startDebate() {
-    const idea = this.ideaInput.value.trim();
+    const idea = this.ideaInput?.value?.trim?.() || '';
     if (!idea) {
-      this.ideaInput.focus();
-      return;
-    }
-
-    const apiKey = this.getApiKey();
-    if (!apiKey) {
-      this.showError('Please enter your OpenAI API key');
-      this.apiKeyInput.focus();
-      return;
-    }
-
-    if (!apiKey.startsWith('sk-')) {
-      this.showError('Invalid API key format. It should start with "sk-"');
-      this.apiKeyInput.focus();
+      this.ideaInput?.focus?.();
       return;
     }
 
@@ -1168,16 +1135,17 @@ class DebateArena {
     this.attachedFiles = files;
 
     // Disable start button while analyzing
-    this.startDebateBtn.disabled = true;
-    this.startDebateBtn.textContent = 'Analyzing...';
+    if (this.startDebateBtn) {
+      this.startDebateBtn.disabled = true;
+      this.startDebateBtn.textContent = 'Analyzing...';
+    }
 
     try {
       // First, analyze the idea and ask clarifying questions BEFORE making assumptions
       const analysisResponse = await fetch('/api/analyze-idea', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiKey
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ idea, files })
       });
@@ -1187,59 +1155,42 @@ class DebateArena {
 
         // If there are clarifying questions, ask them first
         if (analysis.questions && analysis.questions.length > 0) {
-          this.startDebateBtn.disabled = false;
-          this.startDebateBtn.textContent = 'Start';
+          if (this.startDebateBtn) {
+            this.startDebateBtn.disabled = false;
+            this.startDebateBtn.textContent = 'Start';
+          }
 
           // Store pending questions and continue after all are answered
           await this.askPreDebateClarifications(idea, files, analysis.questions);
-          return; // The continuation happens in askPreDebateClarifications
+          return; // continuation happens in showNextPreDebateQuestion()
         }
       }
 
       // No questions needed, proceed directly
       await this.proceedWithDebate(idea, files);
-
     } catch (error) {
       console.error('Failed to start debate:', error);
       this.showError('Failed to start debate. Please try again.');
-      this.startDebateBtn.disabled = false;
-      this.startDebateBtn.textContent = 'Start';
+      if (this.startDebateBtn) {
+        this.startDebateBtn.disabled = false;
+        this.startDebateBtn.textContent = 'Start';
+      }
     }
   }
 
   async askPreDebateClarifications(idea, files, questions) {
-    // Show questions one at a time using the clarification modal
-    this.preDebateClarifications = [];
-    this.pendingPreDebateQuestions = [...questions];
     this.preDebateIdea = idea;
     this.preDebateFiles = files;
-
-    // Show first question
-    this.showNextPreDebateQuestion();
-  }
-
-  showNextPreDebateQuestion() {
-    if (this.pendingPreDebateQuestions.length === 0) {
-      // All questions answered, proceed with debate
-      this.clarificationModal.classList.add('hidden');
-      this.isPreDebateClarification = false; // Reset flag
-      this.proceedWithDebate(this.preDebateIdea, this.preDebateFiles);
-      return;
-    }
-
-    const nextQuestion = this.pendingPreDebateQuestions[0];
-    this.clarificationClaim.textContent = `"${nextQuestion.claim}"`;
-    this.clarificationQuestion.textContent = nextQuestion.question;
-    this.clarificationAnswer.value = '';
-    this.clarificationModal.classList.remove('hidden');
-    this.clarificationAnswer.focus();
-
-    // Mark that we're in pre-debate mode
     this.isPreDebateClarification = true;
+
+    // Show all questions at once
+    this.showClarificationModal(questions);
   }
+
+  // showNextPreDebateQuestion removed in favor of batch mode
 
   async proceedWithDebate(idea, files) {
-    const apiKey = this.getApiKey();
+
 
     this.startDebateBtn.disabled = true;
     this.startDebateBtn.textContent = 'Starting...';
@@ -1248,8 +1199,7 @@ class DebateArena {
       const response = await fetch('/api/start-debate', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiKey
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ idea, files })
       });
@@ -1259,6 +1209,8 @@ class DebateArena {
       this.currentRound = 1;
       this.isPaused = false;
       this.currentIdea = idea;
+      this.interruptedTurn = null;
+      this.discoveryDone = false; // Reset discovery state
 
       // Reset argument storage
       this.advocateArguments = [];
@@ -1307,31 +1259,66 @@ class DebateArena {
   }
 
   async runDebateLoop() {
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 2;
+
     while (!this.isPaused && this.debateId) {
       // Check round limit for free/unauthenticated users
-      if (this.currentRound > MAX_FREE_ROUNDS && !this.canAccessUnlimitedRounds()) {
+      const hasAccess = this.canAccessUnlimitedRounds();
+      if (this.currentRound > MAX_FREE_ROUNDS && !hasAccess) {
         this.isPaused = true;
         this.showRoundLimitReached();
         break;
       }
 
-      await this.runDebateRound();
+      // Update UI round label
+      if (this.currentRound === 1) {
+        this.roundNumberEl.textContent = 'Discovery Phase';
+      } else {
+        this.roundNumberEl.textContent = this.currentRound;
+      }
+
+      const success = await this.runDebateRound();
+
+      // If the round was interrupted for clarification, DON'T increment yet
+      if (this.isPaused) {
+        console.log('Debate loop paused for clarification');
+        break;
+      }
+
+      if (!success) {
+        consecutiveErrors++;
+        console.warn(`Round failed (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS})`);
+
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          this.isPaused = true;
+          this.showError('Debate paused due to repeated errors. Please check your connection or credits.');
+          this.showRestartOption();
+          break;
+        }
+
+        await this.delay(2000);
+        continue;
+      }
+
+      // Reset error count on success
+      consecutiveErrors = 0;
 
       // Enable judge button after first round
       if (this.advocateArguments.length > 0 && this.skepticArguments.length > 0) {
         this.judgeDebateBtn.disabled = false;
       }
 
-      // Save debate progress to Supabase
+      // Save debate progress
       await this.updateSupabaseDebate();
 
       if (this.isPaused) break;
 
-      // Longer pause between rounds to avoid rate limiting
-      await this.delay(2500);
-
-      this.currentRound++;
-      this.roundNumberEl.textContent = this.currentRound;
+      // Increment round ONLY after both sides finished arguments.
+      // If we just finished Discovery preamble, stay in Round 1.
+      if (this.discoveryDone && this.interruptedTurn === null) {
+        this.currentRound++;
+      }
 
       // Check if next round would exceed limit
       if (this.currentRound > MAX_FREE_ROUNDS && !this.canAccessUnlimitedRounds()) {
@@ -1339,16 +1326,38 @@ class DebateArena {
         this.showRoundLimitReached();
         break;
       }
+
+      // Pause between rounds
+      await this.delay(2500);
     }
+  }
+
+  showRestartOption() {
+    const restartMsg = document.createElement('div');
+    restartMsg.className = 'message system-error';
+    restartMsg.innerHTML = `
+      <div class="message-content" style="color: #c4553a; border: 1px solid #c4553a; background: #fff5f5;">
+        <strong>⚠️ Debate Stopped</strong>
+        <p>Too many errors occurred. You can try resuming or start over.</p>
+        <button class="btn-secondary" onclick="window.debateArena.togglePause()">Resume Debate</button>
+      </div>
+    `;
+    this.debateChat.appendChild(restartMsg);
+    this.scrollToBottom(this.debateChat);
   }
 
   canAccessUnlimitedRounds() {
     // Check if user is authenticated and has premium
     const auth = window.authManager;
-    if (!auth || !auth.user) return false;
+    if (!auth || !auth.user) {
+      console.log('DebateLimit: No user logged in');
+      return false;
+    }
 
-    // Check premium status from profile
-    return auth.isPremium();
+    // Explicit debug log
+    const isPremium = auth.profile && auth.profile.is_premium === true;
+    console.log(`DebateLimit: User=${auth.user.email}, Premium=${isPremium}`);
+    return isPremium;
   }
 
   // ==========================================
@@ -1482,23 +1491,104 @@ class DebateArena {
   }
 
   async runDebateRound() {
-    if (this.isDebating) return;
+    if (this.isDebating) return false;
     this.isDebating = true;
+    let success = true;
 
     try {
-      if (this.isPaused) return;
-      await this.getDebaterResponse('advocate', this.lastSkepticArgument);
+      if (this.isPaused) return true;
 
-      // 2 second pause between debaters to avoid rate limiting
+      // Phase 1: Discovery (Round 1 preamble)
+      if (this.currentRound === 1 && !this.discoveryDone) {
+        console.log("Starting Discovery Phase...");
+        success = await this.startDiscovery();
+        // After discovery modal shows, we return true to runDebateLoop 
+        // which now knows NOT to increment currentRound.
+        return success;
+      }
+
+      // Phase 2: Arguments (starts after Discovery in Round 1)
+
+      // Resumption logic for interrupted turns (Fact-checking or LLM clarification)
+      if (this.pendingTurnRetry) {
+        const { role, previousArgument, messageEl } = this.pendingTurnRetry;
+        this.pendingTurnRetry = null;
+        return await this.getDebaterResponse(role, previousArgument, messageEl);
+      }
+
+      // Try Advocate (unless resume logic says skip to Skeptic)
+      if (this.interruptedTurn !== 'skeptic-pending') {
+        const advocateResult = await this.getDebaterResponse('advocate', this.lastSkepticArgument);
+        if (!advocateResult) {
+          success = false;
+          return false;
+        }
+
+        // If advocate triggered a pause, stop here and wait for resumption
+        if (this.isPaused) {
+          return true;
+        }
+      }
+
+      this.interruptedTurn = 'skeptic-pending';
       await this.delay(2000);
+      if (this.isPaused) return true;
 
-      if (this.isPaused) return;
-      await this.getDebaterResponse('skeptic', this.lastAdvocateArgument);
+      // Try Skeptic
+      const skepticResult = await this.getDebaterResponse('skeptic', this.lastAdvocateArgument);
+      if (!skepticResult) {
+        success = false;
+        return false;
+      }
+
+      if (this.isPaused) return true;
+
+      // Both sides finished successfully
+      this.interruptedTurn = null;
 
     } catch (error) {
       console.error('Debate round failed:', error);
+      success = false;
     } finally {
       this.isDebating = false;
+    }
+
+    return success;
+  }
+
+  async startDiscovery() {
+    try {
+      this.isPaused = true; // Pause loop
+
+      // Update UI round label
+      this.roundNumberEl.textContent = 'Discovery Phase';
+
+      const response = await fetch('/api/discovery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idea: this.preDebateIdea || document.getElementById('ideaInput')?.value?.trim(),
+          files: this.attachedFiles || []
+        })
+      });
+
+      if (!response.ok) throw new Error('Discovery failed');
+
+      const data = await response.json();
+
+      // Map to questions modal
+      if (data.clarifications && data.clarifications.length > 0) {
+        this.showClarificationModal(data.clarifications);
+        return true;
+      } else {
+        // No questions? Skip to argument phase
+        this.isPaused = false;
+        return true;
+      }
+    } catch (error) {
+      console.error('Discovery round error:', error);
+      this.isPaused = false;
+      return false;
     }
   }
 
@@ -1532,8 +1622,7 @@ class DebateArena {
       const response = await fetch('/api/debate-turn', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.getApiKey()
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           debateId: this.debateId,
@@ -1552,13 +1641,14 @@ class DebateArena {
         if (data.needsClarification) {
           typingEl.remove();
           this.resetThinkingSidebar();
-
-          // Pause recursion to ask user
+          // Store for resumption
+          this.pendingTurnRetry = { role, previousArgument };
           await this.askClarification(data.question, role, previousArgument);
-          return;
+          return true; // Use true because it's a valid pause, not a technical failure
         }
 
         if (data.error) {
+          console.error(`Server error in ${role} turn:`, data.error);
           throw new Error(data.error);
         }
       }
@@ -1622,28 +1712,12 @@ class DebateArena {
                     // Use raw text as fallback
                     const cleanText = fullText.replace(/<\/?thinking>/g, '').replace(/<\/?output>/g, '').trim();
                     messageContent.innerHTML = this.formatText(cleanText);
-                    outputText = cleanText; // So it gets stored
-
-                    // Still store it for the judge
-                    if (role === 'advocate') {
-                      this.lastAdvocateArgument = outputText;
-                      this.advocateArguments.push(outputText);
-                    } else {
-                      this.lastSkepticArgument = outputText;
-                      this.skepticArguments.push(outputText);
-                    }
+                    outputText = cleanText;
                   } else {
                     messageContent.innerHTML = `<p style="color: #c4553a; font-style: italic;">${name} had nothing to say... (API returned empty response)</p>`;
                   }
                 } else {
-                  // Store arguments for the judge
-                  if (role === 'advocate') {
-                    this.lastAdvocateArgument = outputText;
-                    this.advocateArguments.push(outputText);
-                  } else {
-                    this.lastSkepticArgument = outputText;
-                    this.skepticArguments.push(outputText);
-                  }
+                  // No specific storage here - wait for fact-check
                 }
 
                 // Clear thinking after a moment
@@ -1662,10 +1736,40 @@ class DebateArena {
 
       // Final check - if no output was captured at all
       if (!outputText || outputText.trim().length < 10) {
+        console.error(`[${role}] No significant output captured. FullText length: ${fullText.length}`);
         messageContent.innerHTML = `<p style="color: #c4553a; font-style: italic;">${name} didn't respond. Retrying might help.</p>`;
+        return false; // Indicate failure
       }
-      // Note: In-debate fact-checking disabled since we now ask clarifying questions
-      // BEFORE the debate starts (pre-debate clarification flow)
+
+      // ---------------------------------------------------------
+      // IN-DEBATE FACT CHECKING (Retry Mode)
+      // ---------------------------------------------------------
+      const clarifications = await this.checkForClarification(outputText, role);
+      if (clarifications && clarifications.length > 0) {
+        // Pause the debate
+        this.isPaused = true;
+        if (this.pauseDebateBtn) {
+          this.pauseDebateBtn.textContent = '▶';
+          this.pauseDebateBtn.title = 'Resume';
+        }
+
+        // Show all questions at once
+        this.pendingTurnRetry = { role, previousArgument, messageEl };
+        this.showClarificationModal(clarifications.slice(0, 3), role);
+
+        return true;
+      }
+
+      // NO CLARIFICATIONS NEEDED - Store the argument permanently
+      if (role === 'advocate') {
+        this.lastAdvocateArgument = outputText;
+        this.advocateArguments.push(outputText);
+      } else {
+        this.lastSkepticArgument = outputText;
+        this.skepticArguments.push(outputText);
+      }
+
+      return true; // Indicate success
 
     } catch (error) {
       typingEl.remove();
@@ -1676,17 +1780,18 @@ class DebateArena {
       const errorEl = document.createElement('div');
       errorEl.className = `message ${role}`;
       errorEl.innerHTML = `
-        <div class="message-header">
-          <div class="message-icon" style="background: #c4553a;">!</div>
-          <span class="message-name">${name}</span>
-          <span class="message-round">Error</span>
-        </div>
-        <div class="message-content" style="color: #c4553a;">
-          <p>Failed to get response: ${error.message}</p>
-          <p style="font-size: 0.8rem; opacity: 0.7;">The debate will continue...</p>
-        </div>
-      `;
+          <div class="message-header">
+            <div class="message-icon" style="background: #c4553a;">!</div>
+            <span class="message-name">${name}</span>
+            <span class="message-round">Error</span>
+          </div>
+          <div class="message-content" style="color: #c4553a;">
+            <p>Failed to get response: ${error.message}</p>
+          </div>
+        `;
       this.debateChat.appendChild(errorEl);
+
+      return false; // Indicate failure so the loop can handle it
     }
   }
 
@@ -1713,8 +1818,7 @@ class DebateArena {
       const response = await fetch('/api/judge', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.getApiKey()
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           debateId: this.debateId,
@@ -1849,42 +1953,52 @@ class DebateArena {
   }
 
   parseResponse(text) {
+    if (!text) return { thinking: '', output: '' };
+
     let thinking = '';
     let output = '';
 
-    // Try to extract <thinking> tags
-    const thinkingMatch = text.match(/<thinking>([\s\S]*?)(<\/thinking>|$)/);
+    // 1. Try to extract <thinking> tags
+    const thinkingMatch = text.match(/<thinking>([\s\S]*?)<\/thinking>/);
     if (thinkingMatch) {
       thinking = thinkingMatch[1].trim();
-    }
-
-    // Try to extract <output> tags
-    const outputMatch = text.match(/<output>([\s\S]*?)(<\/output>|$)/);
-    if (outputMatch) {
-      output = outputMatch[1].trim();
-    }
-
-    // FALLBACK: If no <output> tags found, try to get content after </thinking>
-    if (!output && text.includes('</thinking>')) {
-      const afterThinking = text.split('</thinking>')[1];
-      if (afterThinking) {
-        // Remove any remaining tags and clean up
-        output = afterThinking
-          .replace(/<\/?output>/g, '')
-          .replace(/<\/?thinking>/g, '')
-          .trim();
+    } else {
+      // If no closing tag, everything after <thinking> is thinking
+      const thinkingStart = text.indexOf('<thinking>');
+      if (thinkingStart !== -1) {
+        thinking = text.substring(thinkingStart + 10).trim();
       }
     }
 
-    // FALLBACK 2: If still no output and no tags at all, just use the text
-    if (!output && !text.includes('<thinking>') && !text.includes('<output>')) {
-      output = text.trim();
-      console.warn('No tags found in response, using raw text');
+    // 2. Try to extract <output> tags
+    const outputMatch = text.match(/<output>([\s\S]*?)<\/output>/);
+    if (outputMatch) {
+      output = outputMatch[1].trim();
+    } else {
+      // If no closing tag, everything after <output> is output
+      const outputStart = text.indexOf('<output>');
+      if (outputStart !== -1) {
+        output = text.substring(outputStart + 8).trim();
+      }
     }
 
-    // FALLBACK 3: If we have thinking but no output, something went wrong - log it
+    // 3. FALLBACK: If no <output> found, look for text after thinking
+    if (!output) {
+      if (text.includes('</thinking>')) {
+        output = text.split('</thinking>')[1].trim();
+      } else if (!text.includes('<thinking>') && !text.includes('<output>')) {
+        // If no tags at all, the whole thing is output
+        output = text.trim();
+      }
+    }
+
+    // Clean up any remaining tags from output
+    if (output) {
+      output = output.replace(/<\/?output>/g, '').replace(/<\/?thinking>/g, '').trim();
+    }
+
     if (!output && thinking) {
-      console.warn('Got thinking but no output. Full text:', text.substring(0, 500));
+      console.warn('Got thinking but no output. Full text length:', text.length);
     }
 
     return { thinking, output };
@@ -1970,22 +2084,18 @@ class DebateArena {
     this.lastSkepticArgument = this.skepticArguments[this.skepticArguments.length - 1] || '';
 
     // Create a server-side debate instance for API calls
-    const apiKey = this.getApiKey();
-    if (apiKey) {
-      try {
-        const response = await fetch('/api/start-debate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': apiKey
-          },
-          body: JSON.stringify({ idea: debate.idea })
-        });
-        const data = await response.json();
-        this.debateId = data.debateId;
-      } catch (error) {
-        console.error('Failed to create server debate instance:', error);
-      }
+    try {
+      const response = await fetch('/api/start-debate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ idea: debate.idea })
+      });
+      const data = await response.json();
+      this.debateId = data.debateId;
+    } catch (error) {
+      console.error('Failed to create server debate instance:', error);
     }
 
     // Switch to debate view
@@ -2091,19 +2201,19 @@ class DebateArena {
   // CLARIFICATION METHODS
   // ============================================
 
-  async checkForClarification(draftResponse) {
-    console.log('🔍 Checking for clarification needed...');
+  async checkForClarification(draftResponse, role) {
+    // Checking for clarification needed
     try {
       const response = await fetch('/api/check-facts', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.getApiKey()
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           debateId: this.debateId,
           draftResponse,
-          idea: this.currentIdea // Pass idea as fallback
+          idea: this.currentIdea,
+          role: role
         })
       });
 
@@ -2113,25 +2223,76 @@ class DebateArena {
       }
 
       const result = await response.json();
-      console.log('🔍 Fact check result:', result);
-      return result.needsClarification ? result : null;
+      // Fact check result result
+
+      // New format: { clarifications: [...] }
+      if (result.clarifications && result.clarifications.length > 0) {
+        return result.clarifications; // Return array
+      }
+      return null;
     } catch (error) {
       console.error('Fact check error:', error);
       return null;
     }
   }
 
-  showClarificationModal(claim, question) {
-    this.clarificationClaim.textContent = `"${claim}"`;
-    this.clarificationQuestion.textContent = question;
-    this.clarificationAnswer.value = '';
-    this.clarificationModal.classList.remove('hidden');
-    this.clarificationAnswer.focus();
+  showClarificationModal(batch, roleSource = null) {
+    // Clear the container
+    this.clarificationQuestionsContainer.innerHTML = '';
 
-    // Pause the debate while waiting for clarification
+    // If it's a single object (legacy), wrap it
+    const questions = Array.isArray(batch) ? batch : [batch];
+
+    questions.forEach((item, index) => {
+      const qDiv = document.createElement('div');
+      qDiv.className = 'clarification-batch-item';
+      qDiv.style.marginBottom = '1.5rem';
+
+      const claimEl = document.createElement('p');
+      claimEl.className = 'clarification-claim';
+      claimEl.style.fontSize = '0.8rem';
+      claimEl.style.opacity = '0.7';
+
+      // Role-aware labeling logic
+      let label = 'Founder Question';
+      if (roleSource) {
+        const roleName = roleSource === 'advocate' ? 'Advocate' : 'Skeptic';
+        label = `${roleName} wants to know`;
+      } else if (item.claim) {
+        label = item.claim;
+      }
+
+      claimEl.textContent = `"${label}"`;
+
+      const questionEl = document.createElement('label');
+      questionEl.className = 'clarification-label';
+      questionEl.style.display = 'block';
+      questionEl.style.marginBottom = '0.5rem';
+      questionEl.style.fontWeight = '500';
+      questionEl.textContent = item.question;
+
+      const answerEl = document.createElement('textarea');
+      answerEl.className = 'clarification-input batch-answer';
+      answerEl.placeholder = 'Type your answer...';
+      answerEl.rows = 2;
+      answerEl.dataset.question = item.question;
+
+      qDiv.appendChild(claimEl);
+      qDiv.appendChild(questionEl);
+      qDiv.appendChild(answerEl);
+      this.clarificationQuestionsContainer.appendChild(qDiv);
+
+      if (index === 0) setTimeout(() => answerEl.focus(), 100);
+    });
+
+    this.clarificationModal.classList.remove('hidden');
+
+    // Pause the debate
     this.isPaused = true;
-    this.pauseDebateBtn.textContent = '▶';
-    this.pauseDebateBtn.title = 'Resume';
+    if (this.pauseDebateBtn) {
+      this.pauseDebateBtn.textContent = '▶';
+      this.pauseDebateBtn.title = 'Resume';
+    }
   }
 
   hideClarificationModal() {
@@ -2168,62 +2329,123 @@ class DebateArena {
   }
 
   submitClarification() {
-    const answer = this.clarificationAnswer.value.trim();
-    if (!answer) {
-      this.clarificationAnswer.focus();
-      return;
+    if (this.submitClarificationBtn) this.submitClarificationBtn.textContent = 'Continuing...';
+    const answerInputs = this.clarificationQuestionsContainer.querySelectorAll('.batch-answer');
+    const answers = [];
+    let hasEmpty = false;
+
+    answerInputs.forEach(input => {
+      const val = input.value.trim();
+      if (!val) {
+        input.classList.add('error');
+        hasEmpty = true;
+      } else {
+        input.classList.remove('error');
+        const question = input.dataset.question;
+        answers.push({ question, answer: val });
+
+        // Add to main clarifications tracker
+        this.clarifications.push({
+          question,
+          answer: val,
+          timestamp: Date.now()
+        });
+      }
+    });
+
+    // Handle legacy single-textarea if it exists and had content
+    if (this.clarificationAnswer && this.clarificationAnswer.value.trim() && answers.length === 0) {
+      const val = this.clarificationAnswer.value.trim();
+      const question = this.clarificationQuestion.textContent;
+      answers.push({ question, answer: val });
+      this.clarifications.push({ question, answer: val, timestamp: Date.now() });
     }
 
-    const question = this.clarificationQuestion.textContent;
-
-    // Add to clarifications list
-    this.clarifications.push({
-      question,
-      answer,
-      timestamp: Date.now()
-    });
+    if (hasEmpty && answerInputs.length > 0) return;
 
     this.clarificationModal.classList.add('hidden');
 
-    // If this was pre-debate check
+    // If this was pre-debate check (Analyzing Idea)
     if (this.isPreDebateClarification) {
-      // Remove the answered question
-      this.pendingPreDebateQuestions.shift();
-      // Look for next question
-      this.showNextPreDebateQuestion();
+      this.isPreDebateClarification = false;
+      this.proceedWithDebate(this.preDebateIdea, this.preDebateFiles);
     }
-    // If this was in-debate interruption
-    else if (this.pendingClarification) {
-      const { role, previousArgument } = this.pendingClarification;
-      this.pendingClarification = null;
-      this.isPaused = false; // Resume
+    // If this was Discovery Phase (Round 1 preamble)
+    else if (this.currentRound === 1 && !this.pendingTurnRetry) {
+      console.log('🚀 Discovery Phase Answers received');
+      this.isPaused = false;
+      this.discoveryDone = true; // Mark discovery as complete
 
-      // Add system message to chat
-      const sysMsg = document.createElement('div');
-      sysMsg.className = 'message system-clarification';
-      sysMsg.innerHTML = `
-        <div class="message-content">
-          <strong>Clarification added:</strong> ${this.escapeHtml(answer)}
-        </div>
-      `;
-      this.debateChat.appendChild(sysMsg);
+      // Store in clarifications array so server gets it
+      this.clarifications = [...(this.clarifications || []), ...answers];
+      this.factSheet = answers.map(a => `${a.question}: ${a.answer}`).join('\n');
 
-      // Retry the turn immediately
-      this.getDebaterResponse(role, previousArgument);
+      // Add Q&A bubbles to chat for context
+      answers.forEach(item => {
+        const sysMsg = document.createElement('div');
+        sysMsg.className = 'message system-clarification';
+        sysMsg.innerHTML = `
+          <div class="message-content">
+            <strong>Q:</strong> ${this.escapeHtml(item.question)}<br>
+            <strong>A:</strong> ${this.escapeHtml(item.answer)}
+          </div>
+        `;
+        this.debateChat.appendChild(sysMsg);
+      });
+      this.scrollToBottom(this.debateChat);
+
+      // Discovery is done. Resume Round 1 but for Arguments.
+      this.runDebateLoop();
+    }
+    // If this was in-debate fact-check (retry mode)
+    else if (this.pendingTurnRetry) {
+      const { role, previousArgument, messageEl } = this.pendingTurnRetry;
+      this.pendingTurnRetry = null;
+      this.isPaused = false;
+
+      // Add Q&A bubbles to chat for context
+      answers.forEach(item => {
+        const sysMsg = document.createElement('div');
+        sysMsg.className = 'message system-clarification';
+        sysMsg.innerHTML = `
+          <div class="message-content">
+            <strong>Q:</strong> ${this.escapeHtml(item.question)}<br>
+            <strong>A:</strong> ${this.escapeHtml(item.answer)}
+          </div>
+        `;
+        // Insert after the draft message to preserve chronology
+        if (messageEl) {
+          this.debateChat.insertBefore(sysMsg, messageEl.nextSibling);
+        } else {
+          this.debateChat.appendChild(sysMsg);
+        }
+      });
+
+      // We no longer remove the messageEl, as the user wants to see the flow (Thinking -> Q&A -> Argument)
+      if (messageEl) {
+        messageEl.style.opacity = '0.7'; // Fade it slightly to show it's a draft/interrupted
+      }
+
+      // Resume the loop - it will call runDebateRound,
+      // which will see this.interruptedTurn and continue correctly
+      this.runDebateLoop();
     }
   }
 
-  skipClarification() {
-    this.clarificationModal.classList.add('hidden');
+  togglePause() {
+    this.isPaused = !this.isPaused;
 
-    if (this.isPreDebateClarification) {
-      this.pendingPreDebateQuestions.shift();
-      this.showNextPreDebateQuestion();
-    } else if (this.pendingClarification) {
-      const { role, previousArgument } = this.pendingClarification;
-      this.pendingClarification = null;
-      this.isPaused = false;
-      this.getDebaterResponse(role, previousArgument);
+    if (this.isPaused) {
+      if (this.pauseDebateBtn) {
+        this.pauseDebateBtn.textContent = '▶';
+        this.pauseDebateBtn.title = 'Resume';
+      }
+    } else {
+      if (this.pauseDebateBtn) {
+        this.pauseDebateBtn.textContent = '⏸';
+        this.pauseDebateBtn.title = 'Pause';
+      }
+      this.runDebateLoop();
     }
   }
 }

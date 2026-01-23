@@ -12,7 +12,6 @@ const MOCK_ENV = {
     SUPABASE_URL: 'https://mock-supabase.co',
     SUPABASE_SERVICE_ROLE_KEY: 'eyMockServiceRoleKey',
     SUPABASE_ANON_KEY: 'eyMockAnonKey',
-    OPENAI_API_KEY: 'sk-mock-openai',
     OPENROUTER_API_KEY: 'sk-or-mock',
     STRIPE_SECRET_KEY: 'sk_test_mock',
     STRIPE_PRICE_ID: 'price_mock',
