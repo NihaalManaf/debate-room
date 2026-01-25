@@ -643,18 +643,22 @@ class AuthManager {
     const isPremium = this.isPremium();
 
     // Update model selector state
+    const modelSelectorRow = document.getElementById('standardModelRow');
     const modelSelector = document.getElementById('modelSelector');
     const modelLock = document.getElementById('modelLock');
+    const premiumSettings = document.getElementById('premiumSettings');
 
-    if (modelSelector && modelLock) {
-      if (isPremium) {
-        modelSelector.disabled = false;
-        modelLock.classList.add('hidden');
-      } else {
+    if (isPremium) {
+      if (modelSelectorRow) modelSelectorRow.classList.add('hidden');
+      if (premiumSettings) premiumSettings.classList.remove('hidden');
+    } else {
+      if (modelSelectorRow) modelSelectorRow.classList.remove('hidden');
+      if (premiumSettings) premiumSettings.classList.add('hidden');
+      if (modelSelector) {
         modelSelector.disabled = true;
-        modelSelector.value = 'openai/gpt-4o-mini'; // Reset to default
-        modelLock.classList.remove('hidden');
+        modelSelector.value = 'openai/gpt-4o-mini';
       }
+      if (modelLock) modelLock.classList.remove('hidden');
     }
 
     // Update File Manager limits if it exists
@@ -1618,7 +1622,10 @@ class DebateArena {
     `;
 
     try {
-      const model = this.getSelectedModel();
+      const isPremium = window.authManager?.isPremium();
+      const model = isPremium ? this.getSelectedModel(role) : this.getSelectedModel();
+      const instructions = isPremium ? this.getGuidingInstructions(role) : '';
+
       const response = await fetch('/api/debate-turn', {
         method: 'POST',
         headers: {
@@ -1629,7 +1636,8 @@ class DebateArena {
           role,
           previousArgument,
           clarifications: this.clarifications,
-          model: model
+          model: model,
+          instructions: instructions
         })
       });
 
@@ -2299,12 +2307,25 @@ class DebateArena {
     this.clarificationModal.classList.add('hidden');
   }
 
-  getSelectedModel() {
+  getSelectedModel(role) {
+    if (role && window.authManager?.isPremium()) {
+      const selectorId = role === 'advocate' ? 'advocateModelSelector' : 'skepticModelSelector';
+      const selector = document.getElementById(selectorId);
+      if (selector) return selector.value;
+    }
+
     const selector = document.getElementById('modelSelector');
     if (selector) {
       return selector.value;
     }
-    return 'gpt-4o-mini';
+    return 'openai/gpt-4o-mini';
+  }
+
+  getGuidingInstructions(role) {
+    if (!role || !window.authManager?.isPremium()) return '';
+    const inputId = role === 'advocate' ? 'advocateInstructions' : 'skepticInstructions';
+    const input = document.getElementById(inputId);
+    return input ? input.value.trim() : '';
   }
 
   async askClarification(question, role, previousArgument) {

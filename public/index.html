@@ -48,7 +48,7 @@
           </div>
 
 
-          <div class="model-selector-row">
+          <div class="model-selector-row" id="standardModelRow">
             <label for="modelSelector" class="model-selector-label">Model:</label>
             <select id="modelSelector" class="model-selector" disabled>
               <option value="openai/gpt-4o-mini">GPT-4o Mini (Standard)</option>
@@ -58,6 +58,43 @@
               <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B (Premium)</option>
             </select>
             <span class="premium-lock" id="modelLock" title="Upgrade to Premium to unlock">🔒</span>
+          </div>
+
+          <!-- Premium Settings Container -->
+          <div id="premiumSettings" class="premium-settings-container hidden">
+            <div class="premium-role-settings">
+              <div class="role-setting">
+                <div class="role-setting-header">
+                  <span class="role-icon">✓</span>
+                  <label>Advocate Settings</label>
+                </div>
+                <select id="advocateModelSelector" class="model-selector-premium">
+                  <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+                  <option value="openai/gpt-4o">GPT-4o</option>
+                  <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
+                  <option value="google/gemini-flash-1.5">Gemini 1.5 Flash</option>
+                  <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B</option>
+                </select>
+                <textarea id="advocateInstructions" class="instruction-input"
+                  placeholder="Guiding instructions for Advocate... (e.g. 'be aggressive', 'focus on ROI')"></textarea>
+              </div>
+
+              <div class="role-setting">
+                <div class="role-setting-header">
+                  <span class="role-icon skeptic">✗</span>
+                  <label>Skeptic Settings</label>
+                </div>
+                <select id="skepticModelSelector" class="model-selector-premium">
+                  <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+                  <option value="openai/gpt-4o" selected>GPT-4o</option>
+                  <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
+                  <option value="google/gemini-flash-1.5">Gemini 1.5 Flash</option>
+                  <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B</option>
+                </select>
+                <textarea id="skepticInstructions" class="instruction-input"
+                  placeholder="Guiding instructions for Skeptic... (e.g. 'challenge unit economics', 'be cynical')"></textarea>
+              </div>
+            </div>
           </div>
           <button id="startDebate" class="btn-start">
             Begin Debate →

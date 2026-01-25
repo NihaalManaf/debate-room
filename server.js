@@ -442,36 +442,34 @@ app.post('/api/check-facts', async (req, res) => {
 
     console.log(`📋 Fact-checking [${roleLabel}] draft response...`);
 
-    const factCheckPrompt = `You are a strict investor evaluating a startup idea.
-    
-DRAFT ARGUMENT FROM THE ${roleLabel.toUpperCase()}:
+    const factCheckPrompt = `You are a strict investor fact-checking a debater's claims about a startup.
+
+DRAFT ARGUMENT:
 "${draftResponse}"
 
-CONTEXT:
+KNOWN CONTEXT:
 ${availableContext}${confirmedContext}
 
-YOUR MISSION:
-Identify specific claims about the startup's capabilities, features, or team that are UNCONFIRMED. 
+YOUR GOAL:
+Identify internal proprietary claims about the startup that require verification from the founder.
 
 STRICT RULES:
-1. NEVER ask about something already in the "ALREADY CONFIRMED BY FOUNDER" section above.
-2. IMPORTANT: If the founder answered "unsure" to a previous question, that fact is now considered "UNKNOWN". Do NOT flag it again as a hallucination or ask about it again. Accept the debater's use of it as a logical possibility or critique.
-3. DISTINGUISH between "Arguments" and "Claims":
-   - Argument: "You have no pricing model." (This is a critique, NOT a hallucination. Do NOT flag.)
-   - Claim: "You have a $10/month pricing model." (This is a fact. If unconfirmed, FLAG it.)
-4. If the debater makes a NEW technical claim (e.g., "AI agents handle complex workflows"), ask: "Can you elaborate on how your AI agents handle specific complex workflows?"
-5. Avoid "Is it true...". Use "How...", "Can you elaborate on...", "What is the specific plan for...", etc.
-6. If the draft argument is consistent with confirmed facts or is purely a logical critique, return { "clarifications": [] }.
+1. IGNORE logical arguments, business critiques, market data, and external citations (e.g., "McKinsey says...", "Figma did X").
+2. MUST FLAG any specific proprietary "facts" about this startup's internal reality that are not in the Known Context. This includes:
+   - Specific founders/team members (e.g., "CTO from OpenAI").
+   - Funding and Revenue (e.g., "$5M seed", "$100k ARR").
+   - User numbers and Traction (e.g., "50k users", "Partnered with Sequoia").
+   - Specific internal technical components (e.g., "We use Pinecone").
+3. If a claim is just general (e.g., "The idea has potential"), IGNORE it.
+4. For any proprietary claim, ask a deep, evaluative question.
 
-Return UP TO 3 questions (JSON format). 
-For the "claim" field, prepend the debater's name:
+Return JSON format: 
 {
   "clarifications": [
-    { "claim": "The ${roleLabel} suggests: [specific claim]", "question": "Deeper, evaluative question..." }
+    { "claim": "The ${roleLabel} says: ...", "question": "..." }
   ]
 }
-
-If everything is confirmed, consistent, or a logical argument, return: { "clarifications": [] }`;
+If no proprietary claims, return { "clarifications": [] }.`;
 
     const response = await client.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -635,13 +633,21 @@ Counter their point. Add ONE new argument.`;
 
   try {
     const debateModel = model || 'gpt-4o-mini';
+    const instructions = req.body.instructions;
+
+    // Add user instructions to system prompt if provided
+    let finalSystemPrompt = systemPrompt;
+    if (instructions && instructions.trim()) {
+      finalSystemPrompt += `\n\nUSER GUIDANCE FOR THIS TURN:\n${instructions}`;
+    }
+
     console.log(`🚀 [${role.toUpperCase()}] Calling OpenAI API (${debateModel})...`);
     // console.log(`DEBUG: User Message: ${userMessage.substring(0, 500)}...`);
 
     const completion = await client.chat.completions.create({
       model: debateModel,
       messages: [
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: finalSystemPrompt },
         { role: 'user', content: userMessage }
       ],
       stream: false, // Turn off streaming initially to check for clarifications
