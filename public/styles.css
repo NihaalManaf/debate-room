@@ -587,16 +587,103 @@ body {
   color: var(--text-muted);
 }
 
-.model-selector {
-  flex: 1;
-  background: transparent;
-  border: none;
+/* Premium Settings UI */
+.premium-settings-container {
+  background: var(--bg-cream);
+  border: 1.5px solid #fbbf24;
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin: 0.5rem 0;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.premium-role-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.role-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.role-setting-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 0.9375rem;
+  color: var(--text-dark);
+}
+
+.role-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 10px;
+  background: var(--advocate);
+  color: white;
+}
+
+.role-icon.skeptic {
+  background: var(--skeptic);
+}
+
+.model-selector-premium {
+  width: 100%;
+  background: var(--bg-warm);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.625rem 0.875rem;
   font-family: var(--font-body);
   font-size: 0.875rem;
   color: var(--text-body);
   cursor: pointer;
-  appearance: none;
-  /* Remove default arrow to style consistently if needed, but keeping simple for now */
+}
+
+.instruction-input {
+  width: 100%;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  color: var(--text-body);
+  resize: vertical;
+  min-height: 80px;
+  transition: all 0.2s ease;
+}
+
+.instruction-input:focus {
+  outline: none;
+  border-color: #fbbf24;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.1);
+}
+
+.hidden {
+  display: none !important;
+}
+
+.model-selector:focus {
+  outline: none;
 }
 
 /* Diagnostics overlay (for users without DevTools access) */
